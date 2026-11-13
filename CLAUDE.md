@@ -14,16 +14,13 @@ Home Assistant (локальний, RPi 5) сам пушить дані у Fireb
 ## Структура
 - `public/` — дашборд: `app.js` (рендер), `logic.js` (чисті обчислення, тестуються в Node),
   `data.js` (Firebase), `config.js` (конфіг Firebase і параметри квартири), `styles.css`
-- `database.rules.json` — правила RTDB: читання для Google-акаунтів з `access/viewers` або за PIN;
+- `database.rules.json` — правила RTDB: читання для Google-акаунтів з `access/viewers`;
   запис у `/home` лише HA-користувачу з `access/writers`
 - `homeassistant/packages/home_dashboard.yaml` — пакет HA (позначки ⚙️ = що заповнити)
-- `tools/test_push.sh` — тестовий запис без HA; `tools/pin_hash.sh` — хеш пароля для `pin/hash`
+- `tools/test_push.sh` — тестовий запис без HA
 
 ## Вхід
-- Google (allowlist uid у `access/viewers`) АБО простий пароль: анонімний Firebase-юзер +
-  SHA-256("projectId:пароль") у `pin_try/<uid>`; порівнюється з `pin/hash` у правилах.
-- Блокування контролюють правила (`pin_guard`): 3 спроби → 1 хв, далі ×2 до 24 год, глобально.
-  Перевірка пароля можлива лише в одному атомарному update із записом «спроби».
+- Лише Google: allowlist uid у `access/viewers`. Вхід за паролем (PIN) прибрано.
 - Правила НЕ перевірені в емуляторі (у попередньому середовищі він не завантажувався) —
   варто прогнати `firebase emulators:start --only database` + @firebase/rules-unit-testing.
 

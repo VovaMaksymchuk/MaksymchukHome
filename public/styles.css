@@ -105,6 +105,14 @@ code { font-size: 12px; background: var(--surface-2); padding: 2px 5px; border-r
   font-size: 12px; padding: 4px 10px; border-radius: 99px;
   background: var(--surface-2); color: var(--text-secondary); white-space: nowrap;
 }
+/* кругла кнопка-іконка у верхній панелі (оновити сторінку) */
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; cursor: pointer;
+  background: var(--surface-2); color: var(--text-secondary);
+}
+.icon-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.icon-btn:active svg { transform: rotate(-90deg); transition: transform .2s ease; }
 .chip--warn { color: var(--text-primary); background: color-mix(in srgb, var(--warning) 22%, var(--surface-2)); }
 .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 0 var(--good); animation: pulse 2s infinite; }
 .pulse.off { background: var(--warning); animation: none; }
@@ -287,8 +295,14 @@ svg.flow { display: block; width: 100%; height: auto; max-width: 640px; margin: 
 .btn--sm { width: auto; padding: 8px 14px; font-size: 13px; }
 
 /* ============ auth ============ */
-.center-screen { min-height: 100dvh; display: grid; place-items: center; padding: 20px; }
-.auth { width: 100%; max-width: 360px; display: grid; gap: 12px; text-align: center; justify-items: center; padding: 28px 22px; }
+/* minmax(0, 1fr): без цього Safari розтягує колонку під довгий текст, і вміст картки
+   виходить за її правий край */
+/* body вже має відступи safe-area (виріз/смуга iPhone) — віднімаємо їх, інакше
+   екран вищий за вікно: з'являється скрол і блок зміщується вниз */
+.center-screen { min-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom)); display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; padding: 20px; }
+.auth { width: 100%; max-width: 360px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; text-align: center; justify-items: center; padding: 28px 22px; }
+.auth p { margin: 0; overflow-wrap: anywhere; }
+.auth .btn--google { margin-top: 8px; }
 .auth h1 { font-size: 22px; }
 .auth details { width: 100%; }
 .form { display: grid; gap: 8px; margin-top: 10px; }
@@ -311,20 +325,7 @@ svg.flow { display: block; width: 100%; height: auto; max-width: 640px; margin: 
   max-width: calc(100% - 32px); z-index: 20;
 }
 
-/* ============ password login ============ */
-.auth .form { width: 100%; margin-top: 4px; }
-.auth .form input { text-align: center; font-size: 20px; letter-spacing: .25em; }
-.auth .form input::placeholder { letter-spacing: normal; font-size: 16px; }
-.auth .form input[aria-invalid="true"] { border-color: var(--critical); animation: shake .35s; }
-@keyframes shake { 25% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
-@media (prefers-reduced-motion: reduce) { .auth .form input[aria-invalid="true"] { animation: none; } }
-.pin-status { min-height: 20px; color: var(--text-secondary); }
-.pin-status.is-locked { padding: 10px 12px; border-radius: 12px; width: 100%;
-  background: color-mix(in srgb, var(--critical) 14%, var(--surface-2)); color: var(--text-primary); }
-.pin-status .countdown { font-variant-numeric: tabular-nums; font-weight: 650; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
-.divider { display: flex; align-items: center; gap: 10px; width: 100%; color: var(--text-muted); font-size: 12px; }
-.divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 
 /* ============ розумний будинок ============ */
 .climatelist { display: flex; flex-direction: column; gap: 4px; }

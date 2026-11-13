@@ -1,6 +1,6 @@
 // Data layer: Firebase Realtime Database.
 import { firebaseConfig } from "./config.js";
-import { dayKey, startOfDay, addDays, pinGuardNext, pinStatus } from "./logic.js";
+import { dayKey, startOfDay, addDays } from "./logic.js";
 
 const SDK = "https://www.gstatic.com/firebasejs/12.18.0";
 
@@ -21,11 +21,8 @@ export const emptyState = () => ({
 });
 
 // ============================ Firebase ============================
-// Access paths:
-//   • Google account listed in access/viewers/<uid>
-//   • simple password (PIN): anonymous Firebase user + correct hash in pin_try/<uid>,
-//     with a server-enforced lockout (see database.rules.json → pin_guard)
-export async function connectFirebase({ onAuth, onState, onGuard, onError }) {
+// Доступ: лише Google-акаунт зі списку access/viewers/<uid>.
+export async function connectFirebase({ onAuth, onState, onError }) {
   const [{ initializeApp }, authMod, dbMod] = await Promise.all([
     import(`${SDK}/firebase-app.js`),
     import(`${SDK}/firebase-auth.js`),
@@ -33,10 +30,10 @@ export async function connectFirebase({ onAuth, onState, onGuard, onError }) {
   ]);
   const {
     getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signInWithRedirect,
-    getRedirectResult, signInAnonymously, signOut, browserLocalPersistence, setPersistence,
+    getRedirectResult, signOut, browserLocalPersistence, setPersistence,
   } = authMod;
   const {
-    getDatabase, ref, onValue, query, orderByKey, startAt, limitToLast, get, update, set, remove, serverTimestamp,
+    getDatabase, ref, onValue, query, orderByKey, startAt, limitToLast, get, set, serverTimestamp,
   } = dbMod;
 
   const app = initializeApp(firebaseConfig);
@@ -50,9 +47,7 @@ export async function connectFirebase({ onAuth, onState, onGuard, onError }) {
   const serverNow = () => Date.now() + serverOffset;
 
   let unsubs = [];
-  let guardUnsub = null;
-  const stopAll = () => { unsubs.forEach((u) => u()); unsubs = []; stopGuard(); };
-  const stopGuard = () => { guardUnsub?.(); guardUnsub = null; };
+  const stopAll = () => { unsubs.forEach((u) => u()); unsubs = []; };
 
   const canRead = () => get(ref(db, "home/live")).then(() => true, () => false);
 
@@ -94,63 +89,16 @@ export async function connectFirebase({ onAuth, onState, onGuard, onError }) {
   const setClimateTarget = (id, target, mode) =>
     set(ref(db, `home/commands/climate/${id}`), { target, ...(mode ? { mode } : {}), ts: serverTimestamp() });
 
-  function showLogin(user) {
-    stopAll();
-    onAuth({ user, allowed: false, login: true });
-    // live lockout status for the password form
-    guardUnsub = onValue(ref(db, "pin_guard"), (s) => onGuard?.(s.val(), serverNow()), () => {});
-  }
-
   onAuthStateChanged(auth, async (user) => {
-    if (!user) {
-      // Silent anonymous session so the password form can read the lockout state.
-      try { await signInAnonymously(auth); }
-      catch (e) { stopAll(); onAuth({ user: null, login: true, pinUnavailable: true }); }
-      return;
-    }
+    if (!user) { stopAll(); return onAuth({ user: null, login: true }); }
+    // стара сесія входу за паролем (анонімний користувач) — більше не підтримується
+    if (user.isAnonymous) return signOut(auth);
     if (await canRead()) return startSession(user);
-    if (user.isAnonymous) return showLogin(user);
     stopAll();
     onAuth({ user, allowed: false }); // Google account not in access/viewers
   });
 
-  async function sha256hex(text) {
-    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  }
-
-  // Returns {ok:true} | {ok:false, locked, until, left}
-  async function signInPin(pin) {
-    let user = auth.currentUser;
-    if (!user || !user.isAnonymous) user = (await signInAnonymously(auth)).user;
-    const hash = await sha256hex(`${firebaseConfig.projectId}:${pin}`);
-
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const g = (await get(ref(db, "pin_guard"))).val();
-      const next = pinGuardNext(g, serverNow());
-      if (next.locked) return { ok: false, locked: true, until: next.until, left: 0 };
-      try {
-        // Atomic: one counted attempt + the guess. Rules reject a guess without the count.
-        await update(ref(db), {
-          pin_guard: { n: next.n, lockMs: next.lockMs, ts: serverTimestamp() },
-          [`pin_try/${user.uid}`]: hash,
-        });
-      } catch (e) {
-        if (attempt === 0) continue; // someone else wrote pin_guard meanwhile — re-read once
-        throw e;
-      }
-      if (await canRead()) {
-        await set(ref(db, "pin_guard"), { n: 0, lockMs: 60000, ts: serverTimestamp() }).catch(() => {});
-        startSession(user);
-        return { ok: true };
-      }
-      const st = pinStatus({ n: next.n, lockMs: next.lockMs, ts: serverNow() }, serverNow());
-      return { ok: false, ...st };
-    }
-  }
-
   return {
-    signInPin,
     signInGoogle: async () => {
       const provider = new GoogleAuthProvider();
       try { await signInWithPopup(auth, provider); }
@@ -160,11 +108,7 @@ export async function connectFirebase({ onAuth, onState, onGuard, onError }) {
         else throw e;
       }
     },
-    signOut: async () => {
-      const u = auth.currentUser;
-      if (u?.isAnonymous) await remove(ref(db, `pin_try/${u.uid}`)).catch(() => {});
-      await signOut(auth);
-    },
+    signOut: () => signOut(auth),
     serverNow,
     setSwitch,
     setClimateTarget,

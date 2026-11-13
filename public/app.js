@@ -4,7 +4,6 @@ import {
   MIN, HOUR, DAY, hhmm, fmtDur, fmtHours, relDay, startOfDay, addDays, dayKey,
   outagesFromEvents, lastEvent, scheduleNow, plannedForDay, plannedRange, clip,
   classifyOutage, batteryEstimate, flattenHistory, outageStats, num,
-  PIN, pinStatus, fmtCountdown,
 } from "./logic.js";
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -18,81 +17,28 @@ const chartData = new Map();
 
 // =============================== boot ===============================
 async function boot() {
-  $("#pin-input").inputMode = settings.pinKeyboard === "text" ? "text" : "numeric";
+  // Встановлений застосунок міг показати закешований старий index.html з формою пароля
+  // (вхід за паролем прибрано) — app.js завжди свіжий, тож прибираємо її звідси.
+  document.querySelectorAll("#pin-form, #pin-status, [data-screen=login] .divider").forEach((el) => el.remove());
   showScreen("loading");
   try {
     api = await connectFirebase({
-      onAuth: ({ user, allowed, login, pinUnavailable }) => {
+      onAuth: ({ user, allowed, login }) => {
         if (allowed) return showApp();
-        if (login) {
-          $("#pin-form").hidden = !!pinUnavailable;
-          if (pinUnavailable) $("#pin-status").textContent = "Вхід за паролем недоступний — увімкни Anonymous у Firebase Authentication.";
-          showScreen("login");
-          return updatePinUI();
-        }
+        if (login) return showScreen("login");
         $("#uid").textContent = user.uid;
         $("#who").textContent = user.email || user.uid;
         showScreen("noaccess");
       },
       onState: (s) => { state = s; scheduleRender(); },
-      onGuard: (g) => { pinGuard = g; updatePinUI(); },
       onError: (e) => {
-        // PIN changed / access revoked while the page was open → back to login
+        // доступ відкликали, поки сторінка була відкрита → назад на вхід
         if (/permission/i.test(e?.code || e?.message || "")) return location.reload();
         toast(e.message || String(e));
       },
     });
   } catch (e) {
     toast("Не вдалось завантажити Firebase: " + e.message);
-  }
-}
-
-// ---------- password (PIN) login ----------
-let pinGuard = null;
-let pinMsg = "";
-let pinBusy = false;
-let pinTick = 0;
-
-const triesWord = (n) => (n === 1 ? "залишилась 1 спроба" : `залишилось ${n} спроби`);
-
-function updatePinUI() {
-  const box = $("#pin-status"), inp = $("#pin-input"), btn = $("#pin-submit");
-  if (!box || $("#pin-form").hidden) return;
-  const t = api?.serverNow ? api.serverNow() : Date.now();
-  const st = pinStatus(pinGuard, t);
-  inp.disabled = btn.disabled = st.locked || pinBusy;
-  clearTimeout(pinTick);
-  if (st.locked) {
-    box.className = "pin-status small is-locked";
-    box.innerHTML = `Забагато невдалих спроб.<br>Спробуй через <span class="countdown">${fmtCountdown(st.until - t)}</span> або увійди через Google.`;
-    pinTick = setTimeout(updatePinUI, 1000);
-    return;
-  }
-  box.className = "pin-status small";
-  const left = st.left < PIN.maxTries ? triesWord(st.left) : "";
-  box.textContent = pinMsg ? `${pinMsg}${left ? " " + left[0].toUpperCase() + left.slice(1) + "." : ""}` : left ? left[0].toUpperCase() + left.slice(1) : "";
-  if (!pinBusy && document.activeElement !== inp && !$("[data-screen=login]").hidden) inp.focus({ preventScroll: true });
-}
-
-async function submitPin(pin) {
-  if (pinBusy || !pin) return;
-  pinBusy = true; pinMsg = ""; updatePinUI();
-  $("#pin-submit").textContent = "Перевіряю…";
-  try {
-    const r = await api.signInPin(pin);
-    if (r.ok) { pinMsg = ""; return; }
-    pinMsg = r.locked ? "" : "Невірний пароль.";
-    if (r.locked && !pinStatus(pinGuard, api.serverNow()).locked) pinGuard = { n: PIN.maxTries, ts: r.until - 60_000, lockMs: 60_000 };
-    const inp = $("#pin-input");
-    inp.value = "";
-    inp.setAttribute("aria-invalid", "true");
-    setTimeout(() => inp.removeAttribute("aria-invalid"), 600);
-  } catch (e) {
-    toast(e.message || String(e));
-  } finally {
-    pinBusy = false;
-    $("#pin-submit").textContent = "Увійти";
-    updatePinUI();
   }
 }
 
@@ -918,17 +864,10 @@ document.addEventListener("click", (e) => {
   if (bar) { $("#tl-detail").textContent = bar.dataset.detail; return; }
   if (e.target.closest("#btn-google")) api?.signInGoogle().catch((er) => toast(er.message));
   if (e.target.closest("[data-signout]")) api?.signOut();
+  // у встановленому застосунку (iPhone) немає кнопки оновлення браузера
+  if (e.target.closest("[data-reload]")) location.reload();
   if (e.target.closest("#btn-copy-uid")) navigator.clipboard?.writeText($("#uid").textContent).then(() => toast("UID скопійовано"));
 });
-document.addEventListener("submit", (e) => {
-  if (e.target.id !== "pin-form") return;
-  e.preventDefault();
-  submitPin(new FormData(e.target).get("pin"));
-});
-document.addEventListener("input", (e) => {
-  if (e.target.id === "pin-input" && pinMsg) { pinMsg = ""; updatePinUI(); }
-});
-
 // ---------- розумний будинок: команди ----------
 // HA сам підхопить команду з home/commands і поверне підтверджений стан.
 // Поки підтвердження немає — плитка «в завантаженні» і не приймає повторних натискань.

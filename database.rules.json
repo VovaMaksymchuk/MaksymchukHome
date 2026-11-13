@@ -4,10 +4,9 @@
     ".write": false,
 
     // ─────────────── дані дашборда ───────────────
-    // Читати може: Google-акаунт зі списку access/viewers
-    //              АБО будь-хто, хто ввів правильний PIN (pin_try == pin/hash)
+    // Читати може лише Google-акаунт зі списку access/viewers
     "home": {
-      ".read": "auth != null && (root.child('access/viewers/' + auth.uid).val() === true || (root.child('pin/hash').exists() && root.child('pin_try/' + auth.uid).val() === root.child('pin/hash').val()))",
+      ".read": "auth != null && root.child('access/viewers/' + auth.uid).val() === true",
       ".write": "auth != null && root.child('access/writers/' + auth.uid).val() === true",
 
       "live": {
@@ -25,12 +24,12 @@
       },
 
       // Команди від дашборда (вимикачі світла, уставка опалення). Писати може
-      // будь-який ВЬЮЕР (Google зі списку, або PIN) — на відміну від решти /home,
+      // будь-який переглядач (Google зі списку) — на відміну від решти /home,
       // куди пише лише HA. HA сам читає цей шлях, виконує дію й видаляє запис.
       "commands": {
         // HA (writer) має читати команди, щоб їх виконати
         ".read": "auth != null && root.child('access/writers/' + auth.uid).val() === true",
-        ".write": "auth != null && (root.child('access/viewers/' + auth.uid).val() === true || (root.child('pin/hash').exists() && root.child('pin_try/' + auth.uid).val() === root.child('pin/hash').val()))",
+        ".write": "auth != null && root.child('access/viewers/' + auth.uid).val() === true",
         "switches": {
           "$room": { ".validate": "newData.hasChildren(['on']) && newData.child('on').isBoolean()" }
         },
@@ -46,39 +45,6 @@
         "$uid": {
           ".read": "auth != null && auth.uid === $uid"
         }
-      }
-    },
-
-    // ─────────────── PIN-вхід ───────────────
-    // pin/hash — SHA-256("<projectId>:<PIN>") у hex. Задає лише власник через консоль.
-    // Ніхто з клієнтів не може його прочитати.
-    "pin": {
-      ".read": false,
-      ".write": false
-    },
-
-    // Глобальний лічильник спроб (спільний для всіх пристроїв, тому кілька
-    // анонімних акаунтів не дають обійти ліміт):
-    //   n      — спроб у поточному раунді (макс. 3)
-    //   ts     — час останньої спроби (лише серверний час)
-    //   lockMs — тривалість блокування після 3-ї помилки: 1 хв → 2 → 4 … ≤ 24 год
-    // Скидається тільки успішним входом (або n — через 1 год без спроб).
-    "pin_guard": {
-      ".read": "auth != null",
-      ".write": "auth != null && newData.child('ts').val() === now && ((!data.exists() && newData.child('n').val() === 1 && newData.child('lockMs').val() === 60000) || (data.child('n').val() < 3 && now - data.child('ts').val() <= 3600000 && newData.child('n').val() === data.child('n').val() + 1 && newData.child('lockMs').val() === data.child('lockMs').val()) || (data.child('n').val() < 3 && now - data.child('ts').val() > 3600000 && newData.child('n').val() === 1 && newData.child('lockMs').val() === data.child('lockMs').val()) || (data.child('n').val() >= 3 && now >= data.child('ts').val() + data.child('lockMs').val() && newData.child('n').val() === 1 && ((data.child('lockMs').val() * 2 <= 86400000 && newData.child('lockMs').val() === data.child('lockMs').val() * 2) || (data.child('lockMs').val() * 2 > 86400000 && newData.child('lockMs').val() === 86400000))) || (root.child('pin/hash').exists() && root.child('pin_try/' + auth.uid).val() === root.child('pin/hash').val() && newData.child('n').val() === 0 && newData.child('lockMs').val() === 60000))",
-      ".validate": "newData.hasChildren(['n', 'ts', 'lockMs'])",
-      "n": { ".validate": "newData.isNumber()" },
-      "ts": { ".validate": "newData.isNumber()" },
-      "lockMs": { ".validate": "newData.isNumber()" },
-      "$other": { ".validate": false }
-    },
-
-    // Спроба PIN: записати хеш можна ЛИШЕ в тому ж атомарному оновленні,
-    // що й зарахування спроби в pin_guard. Тобто кожна перевірка = -1 спроба.
-    "pin_try": {
-      "$uid": {
-        ".write": "auth != null && auth.uid === $uid && (!newData.exists() || (newData.parent().parent().child('pin_guard/ts').val() === now && newData.parent().parent().child('pin_guard/n').val() >= 1))",
-        ".validate": "newData.isString() && newData.val().matches(/^[0-9a-f]{64}$/)"
       }
     }
   }
