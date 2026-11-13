@@ -339,12 +339,28 @@ svg.flow { display: block; width: 100%; height: auto; max-width: 640px; margin: 
   font-weight: 600; color: var(--text-secondary); font-size: 13px; line-height: 1.2;
   max-width: 64px; flex: none;
 }
-.climate__target { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.climate__target { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+/* 44px — зручна ціль для пальця */
 .climate__btn {
-  width: 28px; height: 28px; border-radius: 50%; border: 0; cursor: pointer; flex: none;
-  background: var(--surface-2); color: var(--text-primary); font-size: 16px; font-weight: 650; line-height: 1;
+  width: 44px; height: 44px; border-radius: 50%; border: 0; cursor: pointer; flex: none;
+  background: var(--surface-2); color: var(--text-primary); font-size: 22px; font-weight: 650; line-height: 1;
+  transition: transform .1s ease, background .15s ease;
 }
-.climate__btn:active { background: var(--line); }
+.climate__btn:active { background: var(--line); transform: scale(0.92); }
+/* команду надіслано — чекаємо підтвердження від HA */
+.climate__power.is-busy { cursor: progress; color: var(--text-secondary); }
+.climate__spin {
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 2.5px solid color-mix(in srgb, currentColor 25%, transparent); border-top-color: currentColor;
+  animation: spin .8s linear infinite;
+}
+.climate__row.is-pending .climate__off-label { color: var(--text-primary); }
+.climate__val.is-pending { color: var(--text-primary); font-weight: 650; animation: pending-blink 1.1s ease-in-out infinite; }
+@keyframes pending-blink { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .climate__val.is-pending { animation: none; text-decoration: underline dotted; } }
+/* з великими кнопками рядок має влазити і в 360px */
+#climate .climate__row { gap: 8px; }
+.climate__target .climate__val { min-width: 40px; }
 .climate__val { min-width: 44px; text-align: center; font-size: 14px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 
 .climate__row--off { gap: 12px; }
@@ -359,6 +375,13 @@ svg.flow { display: block; width: 100%; height: auto; max-width: 640px; margin: 
 .climate__power svg { width: 17px; height: 17px; fill: currentColor; }
 .climate__power.is-on { background: color-mix(in srgb, var(--good) 20%, var(--surface-2)); color: var(--good); }
 .climate__power:active { filter: brightness(0.92); }
+/* котел гріє (клапан відкритий) — оранжевий вогник на місці кнопки живлення */
+.climate__heat {
+  display: flex; align-items: center; justify-content: center; flex: none;
+  width: 32px; height: 32px; border-radius: 50%;
+  background: color-mix(in srgb, var(--serious) 20%, var(--surface-2)); color: var(--serious);
+}
+.climate__heat svg { width: 18px; height: 18px; fill: currentColor; }
 
 .sensorlist { display: flex; flex-direction: column; gap: 2px; }
 .sensor__row {
@@ -371,6 +394,25 @@ svg.flow { display: block; width: 100%; height: auto; max-width: 640px; margin: 
 .sensor__row.is-alarm { color: var(--critical); }
 .sensor__row.is-alarm .sensor__dot { background: var(--critical); box-shadow: 0 0 0 4px var(--crit-wash); animation: pulse 1.2s infinite; }
 .sensor__row.is-alarm .sensor__state { color: var(--critical); font-weight: 650; }
+.sensor__row.is-lowbat .sensor__dot { background: var(--warning); }
+.sensor__row.is-lowbat .sensor__state { color: var(--text-primary); font-weight: 600; }
+.sensor__bats { padding-top: 10px; margin-top: 2px; border-top: 1px solid var(--line); }
+
+/* погода */
+.weather { display: flex; align-items: center; gap: 12px; }
+.weather__icon { font-size: 34px; line-height: 1; flex: none; }
+.weather__t { font-size: 34px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; flex: none; }
+.weather__t .unit { font-size: 20px; font-weight: 600; color: var(--text-secondary); }
+.weather__info { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+/* «Погода і квартира»: під погодою — кімнати, лише перегляд */
+.weather + .ambient__rooms { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.ambient__target { margin-left: auto; min-width: 0; text-align: right; }
+
+/* відключення за адресою (аварійне тощо) у головній картці */
+.hero__alert {
+  margin: 10px 0 2px; padding: 8px 10px; border-radius: 10px;
+  background: color-mix(in srgb, var(--critical) 14%, transparent);
+}
 
 /* великі плитки світла 2-в-ряд, уся плитка клікабельна (Apple HomeKit) */
 .hk-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -379,9 +421,18 @@ svg.flow { display: block; width: 100%; height: auto; max-width: 640px; margin: 
   display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between;
   aspect-ratio: 1 / 0.92; padding: 16px; border-radius: 20px; border: 0; cursor: pointer;
   background: var(--surface-2); color: var(--text-primary); text-align: left;
-  font: inherit; transition: background .15s ease, color .15s ease;
+  font: inherit; transition: background .15s ease, color .15s ease, transform .1s ease;
+  position: relative;
 }
-.hk-tile:active { filter: brightness(0.94); }
+.hk-tile:active { filter: brightness(0.94); transform: scale(0.97); }
+/* команду надіслано, чекаємо підтвердження від HA */
+.hk-tile.is-pending { cursor: progress; }
+.hk-tile.is-pending .hk-tile__state { color: var(--text-primary); font-weight: 600; }
+.hk-tile__spin {
+  position: absolute; top: 14px; right: 14px; width: 20px; height: 20px; border-radius: 50%;
+  border: 2.5px solid color-mix(in srgb, currentColor 25%, transparent); border-top-color: currentColor;
+  animation: spin .8s linear infinite;
+}
 .hk-tile__icon { width: 30px; height: 30px; color: var(--text-secondary); transition: color .15s ease; }
 .hk-tile__icon path { fill: currentColor; stroke: none; }
 .hk-tile__label { font-size: 16px; font-weight: 650; margin-top: 10px; }

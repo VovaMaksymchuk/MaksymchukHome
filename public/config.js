@@ -31,8 +31,8 @@ export const rooms = [
 ];
 
 export const climateDevices = [
-  { id: "boiler", label: "Котел" },
-  { id: "floor", label: "Тепла підлога", toggle: true }, // можна повністю вимкнути, не лише ціль
+  { id: "boiler", label: "Котел", ambientLabel: "Кімната" }, // ambientLabel — показувати на «Стані» з цим підписом
+  { id: "floor", label: "Тепла підлога", labelAcc: "теплу підлогу", toggle: true }, // можна повністю вимкнути, не лише ціль
 ];
 
 export const sensorGroups = {
@@ -41,7 +41,6 @@ export const sensorGroups = {
     { id: "kitchen", label: "Кухня" },
   ],
   smoke: [
-    { id: "kitchen", label: "Кухня" },
     { id: "hallway", label: "Коридор" },
   ],
 };

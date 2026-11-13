@@ -28,6 +28,8 @@
       // будь-який ВЬЮЕР (Google зі списку, або PIN) — на відміну від решти /home,
       // куди пише лише HA. HA сам читає цей шлях, виконує дію й видаляє запис.
       "commands": {
+        // HA (writer) має читати команди, щоб їх виконати
+        ".read": "auth != null && root.child('access/writers/' + auth.uid).val() === true",
         ".write": "auth != null && (root.child('access/viewers/' + auth.uid).val() === true || (root.child('pin/hash').exists() && root.child('pin_try/' + auth.uid).val() === root.child('pin/hash').val()))",
         "switches": {
           "$room": { ".validate": "newData.hasChildren(['on']) && newData.child('on').isBoolean()" }

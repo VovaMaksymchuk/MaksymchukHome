@@ -12,8 +12,7 @@
 #   • home/commands/* — дашборд → Firebase, читає й виконує HA (раз на 3с),
 #     після виконання видаляє запис і одразу пушить підтверджений стан.
 #
-#  ⚙️ Підстав РЕАЛЬНІ entity_id нижче замість switch.YOUR_* / climate.YOUR_* /
-#  binary_sensor.YOUR_* (Settings → Devices & services → Tuya). Ключі зліва
+#  ⚙️ entity_id нижче вже підставлені під цю квартиру (Tuya). Ключі зліва
 #  (living/bedroom/office/hallway, boiler/floor, bathroom/kitchen/hallway) —
 #  фіксовані, бо на них зав'язаний дашборд (public/config.js: rooms,
 #  climateDevices, sensorGroups) — не перейменовуй їх тут.
@@ -35,11 +34,13 @@ script:
     mode: single
     max_exceeded: silent
     variables:
+      # ⚙️ Світло керується сценами Tuya «💡» (scene.*), а стан «горить/ні»
+      # береться з вимикачів кімнати: увімкнено, якщо горить хоч один.
       rooms:
-        living: switch.YOUR_LIVING_LIGHT     # ⚙️ Вітальня
-        bedroom: switch.YOUR_BEDROOM_LIGHT   # ⚙️ Спальня
-        office: switch.YOUR_OFFICE_LIGHT     # ⚙️ Кабінет
-        hallway: switch.YOUR_HALLWAY_LIGHT   # ⚙️ Коридор
+        living:  { scene: scene.vitalnia, state: [switch.svitlo_vitalnia_switch_1] }   # Вітальня
+        bedroom: { scene: scene.spalnia,  state: [switch.svitlo_spalnia_switch_1] }    # Спальня
+        office:  { scene: scene.kabinet,  state: [switch.svitlo_kabinet_switch_1] }    # Кабінет
+        hallway: { scene: scene.koridor,  state: [switch.koridor_vimikach_switch_2] }  # Коридор
     sequence:
       - repeat:
           for_each: "{{ rooms | list }}"
@@ -49,7 +50,7 @@ script:
               data:
                 path: "home/switches/{{ repeat.item }}"
                 body:
-                  on: "{{ is_state(rooms[repeat.item], 'on') }}"
+                  "on": "{{ rooms[repeat.item].state | select('is_state', 'on') | list | count > 0 }}"
                   ts: { ".sv": "timestamp" }
 
   # ---------- Котел + тепла підлога (поточна/цільова температура) → /home/climate ----------
@@ -59,8 +60,11 @@ script:
     max_exceeded: silent
     variables:
       devices:
-        boiler: climate.YOUR_BOILER         # ⚙️ Котел
-        floor: climate.YOUR_FLOOR_HEATING   # ⚙️ Тепла підлога
+        boiler: climate.opalennia         # ⚙️ Котел
+        floor: climate.tepla_pidloga   # ⚙️ Тепла підлога
+      # ⚙️ клапан «гріє зараз» (climate від Tuya не дає hvac_action)
+      valves:
+        boiler: binary_sensor.opalennia_valve
     sequence:
       - repeat:
           for_each: "{{ devices | list }}"
@@ -73,6 +77,7 @@ script:
                   current: "{{ state_attr(devices[repeat.item], 'current_temperature') }}"
                   target: "{{ state_attr(devices[repeat.item], 'temperature') }}"
                   mode: "{{ states(devices[repeat.item]) }}"
+                  heating: "{{ is_state(valves[repeat.item], 'on') if repeat.item in valves else none }}"
                   ts: { ".sv": "timestamp" }
 
   # ---------- Датчики диму/протікання → /home/sensors ----------
@@ -82,11 +87,10 @@ script:
     max_exceeded: silent
     variables:
       leak:
-        bathroom: binary_sensor.YOUR_LEAK_BATHROOM   # ⚙️ Ванна
-        kitchen: binary_sensor.YOUR_LEAK_KITCHEN     # ⚙️ Кухня
+        bathroom: binary_sensor.datchik_vodi_vanna_moisture   # ⚙️ Ванна
+        kitchen: binary_sensor.datchik_vodi_kukhnia_moisture     # ⚙️ Кухня
       smoke:
-        kitchen: binary_sensor.YOUR_SMOKE_KITCHEN    # ⚙️ Кухня
-        hallway: binary_sensor.YOUR_SMOKE_HALLWAY    # ⚙️ Коридор
+        hallway: binary_sensor.datchik_dimu_smoke    # ⚙️ Коридор
     sequence:
       - repeat:
           for_each: "{{ leak | list }}"
@@ -137,14 +141,14 @@ automation:
     mode: single
     max_exceeded: silent
     variables:
-      rooms:
-        living: switch.YOUR_LIVING_LIGHT     # ⚙️ той самий список, що в smart_home_push_switches
-        bedroom: switch.YOUR_BEDROOM_LIGHT
-        office: switch.YOUR_OFFICE_LIGHT
-        hallway: switch.YOUR_HALLWAY_LIGHT
+      rooms:   # ⚙️ той самий список, що в smart_home_push_switches
+        living:  { scene: scene.vitalnia, state: [switch.svitlo_vitalnia_switch_1] }
+        bedroom: { scene: scene.spalnia,  state: [switch.svitlo_spalnia_switch_1] }
+        office:  { scene: scene.kabinet,  state: [switch.svitlo_kabinet_switch_1] }
+        hallway: { scene: scene.koridor,  state: [switch.koridor_vimikach_switch_2] }
       climate_devices:
-        boiler: climate.YOUR_BOILER          # ⚙️ той самий список, що в smart_home_push_climate
-        floor: climate.YOUR_FLOOR_HEATING
+        boiler: climate.opalennia          # ⚙️ той самий список, що в smart_home_push_climate
+        floor: climate.tepla_pidloga
     triggers:
       - trigger: time_pattern
         seconds: "/3"
@@ -159,9 +163,10 @@ automation:
           path: "home/commands/switches"
         response_variable: sw_cmds
       - variables:
+          # rest_command сам парсить JSON-відповідь у dict; null (команд нема) — не mapping
           switch_cmds: >-
-            {{ (sw_cmds.content | from_json)
-               if (sw_cmds is defined and sw_cmds.status == 200 and sw_cmds.content not in ['null', ''])
+            {{ sw_cmds.content
+               if (sw_cmds is defined and sw_cmds.status == 200 and sw_cmds.content is mapping)
                else {} }}
       - repeat:
           for_each: "{{ switch_cmds | list }}"
@@ -170,9 +175,19 @@ automation:
                 - condition: template
                   value_template: "{{ repeat.item in rooms }}"
               then:
-                - action: "{{ 'switch.turn_on' if switch_cmds[repeat.item].on else 'switch.turn_off' }}"
-                  target:
-                    entity_id: "{{ rooms[repeat.item] }}"
+                # Сцена лише перемикає, тож запускаємо її тільки коли стан справді
+                # має змінитись — інакше повторна команда вимкнула б світло назад.
+                - if:
+                    - condition: template
+                      value_template: >-
+                        {{ (rooms[repeat.item].state | select('is_state', 'on') | list | count > 0)
+                           != (switch_cmds[repeat.item].on | bool) }}
+                  then:
+                    - action: scene.turn_on
+                      target:
+                        entity_id: "{{ rooms[repeat.item].scene }}"
+                    # дати Tuya відпрацювати, щоб пуш нижче вже бачив новий стан
+                    - delay: "00:00:02"
                 - action: rest_command.firebase_delete
                   continue_on_error: true
                   data:
@@ -184,8 +199,8 @@ automation:
         response_variable: cl_cmds
       - variables:
           climate_cmds: >-
-            {{ (cl_cmds.content | from_json)
-               if (cl_cmds is defined and cl_cmds.status == 200 and cl_cmds.content not in ['null', ''])
+            {{ cl_cmds.content
+               if (cl_cmds is defined and cl_cmds.status == 200 and cl_cmds.content is mapping)
                else {} }}
       - repeat:
           for_each: "{{ climate_cmds | list }}"
@@ -194,24 +209,50 @@ automation:
                 - condition: template
                   value_template: "{{ repeat.item in climate_devices }}"
               then:
-                - action: climate.set_temperature
-                  target:
-                    entity_id: "{{ climate_devices[repeat.item] }}"
-                  data:
-                    temperature: "{{ climate_cmds[repeat.item].target }}"
                 # mode — лише коли дашборд прислав його (напр. тепла підлога: увімк./вимк.).
+                # Спершу режим (вимкнений Tuya-термостат може ігнорувати уставку).
+                # Дашборд шле "heat"/"off"; Tuya часто має лише off/heat_cool —
+                # беремо режим, який пристрій справді підтримує.
                 - if:
                     - condition: template
                       value_template: "{{ 'mode' in climate_cmds[repeat.item] }}"
                   then:
+                    - variables:
+                        ent: "{{ climate_devices[repeat.item] }}"
+                        want: "{{ climate_cmds[repeat.item].mode }}"
+                        modes: "{{ state_attr(ent, 'hvac_modes') or [] }}"
                     - action: climate.set_hvac_mode
+                      continue_on_error: true
+                      target:
+                        entity_id: "{{ ent }}"
+                      data:
+                        hvac_mode: >-
+                          {{ want if want in modes
+                             else ('off' if want == 'off'
+                                   else (modes | reject('eq', 'off') | first | default(want))) }}
+                # Уставку — лише якщо це не вимкнення: Tuya-термостат від set_temperature
+                # вмикається знову, і команда «вимкнути» не спрацьовувала б.
+                - if:
+                    - condition: template
+                      value_template: "{{ climate_cmds[repeat.item].mode | default('') != 'off' }}"
+                  then:
+                    - action: climate.set_temperature
+                      # помилка не повинна лишати команду в базі (інакше повтор кожні 3 с)
+                      continue_on_error: true
                       target:
                         entity_id: "{{ climate_devices[repeat.item] }}"
                       data:
-                        hvac_mode: "{{ climate_cmds[repeat.item].mode }}"
+                        temperature: "{{ climate_cmds[repeat.item].target }}"
                 - action: rest_command.firebase_delete
                   continue_on_error: true
                   data:
                     path: "home/commands/climate/{{ repeat.item }}"
+      # Tuya оновлює стан термостата із запізненням — дати 2 с, щоб на дашборд
+      # пішов уже новий стан (інакше він «відскакує» і хочеться натиснути ще раз)
+      - if:
+          - condition: template
+            value_template: "{{ climate_cmds | count > 0 }}"
+        then:
+          - delay: "00:00:02"
       - action: script.smart_home_push_switches
       - action: script.smart_home_push_climate

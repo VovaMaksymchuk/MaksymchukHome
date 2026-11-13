@@ -13,7 +13,7 @@ Home Assistant (локальний, RPi 5) сам пушить дані у Fireb
 
 ## Структура
 - `public/` — дашборд: `app.js` (рендер), `logic.js` (чисті обчислення, тестуються в Node),
-  `data.js` (Firebase + демо-дані), `config.js` (конфіг Firebase і параметри квартири), `styles.css`
+  `data.js` (Firebase), `config.js` (конфіг Firebase і параметри квартири), `styles.css`
 - `database.rules.json` — правила RTDB: читання для Google-акаунтів з `access/viewers` або за PIN;
   запис у `/home` лише HA-користувачу з `access/writers`
 - `homeassistant/packages/home_dashboard.yaml` — пакет HA (позначки ⚙️ = що заповнити)
@@ -28,8 +28,7 @@ Home Assistant (локальний, RPi 5) сам пушить дані у Fireb
   варто прогнати `firebase emulators:start --only database` + @firebase/rules-unit-testing.
 
 ## Перегляд
-- `python3 -m http.server -d public 8080` → `/?demo` (тестові дані), `/?demo=login` (пароль 1234)
-- `/?demo&now=<ms>` — заморозити демо-час
+- `python3 -m http.server -d public 8080` → локальна копія (читає живу базу Firebase)
 
 ## Що далі (TODO)
 1. Знайти чергу/підчергу ДТЕК КРЕМ для Січова 30/53 (dtek-krem.com.ua/ua/shutdowns) і

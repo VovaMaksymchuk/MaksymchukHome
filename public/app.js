@@ -1,31 +1,24 @@
-import { settings, firebaseConfig, rooms, climateDevices, sensorGroups } from "./config.js";
-import { connectFirebase, demoState } from "./data.js";
+import { settings, rooms, climateDevices, sensorGroups } from "./config.js";
+import { connectFirebase } from "./data.js";
 import {
   MIN, HOUR, DAY, hhmm, fmtDur, fmtHours, relDay, startOfDay, addDays, dayKey,
   outagesFromEvents, lastEvent, scheduleNow, plannedForDay, plannedRange, clip,
   classifyOutage, batteryEstimate, flattenHistory, outageStats, num,
-  PIN, pinGuardNext, pinStatus, fmtCountdown,
+  PIN, pinStatus, fmtCountdown,
 } from "./logic.js";
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const nf = (v, d = 0) => (v == null ? "—" : Number(v).toLocaleString("uk-UA", { maximumFractionDigits: d, minimumFractionDigits: d }));
 
-const params = new URLSearchParams(location.search);
-const DEMO = params.has("demo") || firebaseConfig.apiKey.startsWith("YOUR_");
-
 let state = null;
 let api = null;
-let ui = { day: 0, logPage: 0, panel: "status" }; // panel: активна вкладка (стан/світло/електрика)
+let ui = { day: 0, logPage: 0, panel: "status" }; // panel: активна вкладка (стан/керування/електрика)
 const chartData = new Map();
 
 // =============================== boot ===============================
 async function boot() {
   $("#pin-input").inputMode = settings.pinKeyboard === "text" ? "text" : "numeric";
-  if (DEMO) {
-    if (params.get("demo") === "login") { api = demoLoginApi(); showScreen("login"); updatePinUI(); return; }
-    return startDemo();
-  }
   showScreen("loading");
   try {
     api = await connectFirebase({
@@ -52,25 +45,6 @@ async function boot() {
   } catch (e) {
     toast("Не вдалось завантажити Firebase: " + e.message);
   }
-}
-
-async function fetchRealSchedule() {
-  try {
-    const r = await fetch("./schedule-5.2.json", { cache: "no-store" });
-    return r.ok ? await r.json() : null;
-  } catch {
-    return null;
-  }
-}
-
-async function startDemo() {
-  const t0 = params.get("now") ? +params.get("now") : Date.now();
-  const shift = Date.now() - t0;
-  const real = await fetchRealSchedule();
-  state = demoState(t0, real);
-  state.serverOffset = -shift; // lets ?now= freeze the demo clock
-  showApp();
-  render();
 }
 
 // ---------- password (PIN) login ----------
@@ -122,32 +96,11 @@ async function submitPin(pin) {
   }
 }
 
-// Demo of the login screen: ?demo=login, password 1234 (lockout is local only)
-function demoLoginApi() {
-  let g = null;
-  return {
-    serverNow: () => Date.now(),
-    signInPin: async (pin) => {
-      await new Promise((r) => setTimeout(r, 350));
-      const t = Date.now();
-      const nx = pinGuardNext(g, t);
-      if (nx.locked) return { ok: false, locked: true, until: nx.until };
-      g = { n: nx.n, lockMs: nx.lockMs, ts: t };
-      if (pin === "1234") { g = null; pinGuard = null; startDemo(); return { ok: true }; }
-      pinGuard = g;
-      return { ok: false, ...pinStatus(g, t) };
-    },
-    signInGoogle: async () => startDemo(),
-    signOut: async () => { location.search = "?demo=login"; },
-  };
-}
-
 function showScreen(name) {
   for (const el of document.querySelectorAll("[data-screen]")) el.hidden = el.dataset.screen !== name;
 }
 function showApp() {
   showScreen("app");
-  $("#demo-badge").hidden = !DEMO;
 }
 
 let raf = 0;
@@ -176,6 +129,7 @@ function render() {
   renderFlow({ live, gridOn, bat });
   renderClimate(state.climate);
   renderSensors(state.sensors);
+  renderAmbient(state.weather, state.climate);
   renderSwitches(state.switches);
   renderBattery(bat, live);
   renderInverter(live, gridOn);
@@ -239,8 +193,14 @@ function renderHero({ live, gridOn, outages, sched, bat, t }) {
     main = since ? fmtDur(t - since) : "";
     sub = since ? `з ${hhmm(since)}${relDay(since, t) !== "сьогодні" ? " " + relDay(since, t) : ""}` : "";
     const cur = sched.current;
+    // Час увімкнення від ДТЕК: орієнтовне відновлення (аварійні) важливіше за кінець за графіком.
+    const d = state.dtek;
+    const dtekOn = d?.restore > t ? d.restore : d?.end > t ? d.end : null;
+    const onAt = dtekOn ?? cur?.e ?? null;
     let planLine;
-    if (cur) {
+    if (dtekOn) {
+      planLine = `ДТЕК: увімкнуть о <b>${relDay(dtekOn, t) === "сьогодні" ? "" : relDay(dtekOn, t) + " "}${hhmm(dtekOn)}</b> <span class="muted">· ще ${fmtDur(dtekOn - t)}</span>`;
+    } else if (cur) {
       planLine = `За графіком увімкнуть о <b>${hhmm(cur.e)}</b> <span class="muted">· ще ${fmtDur(cur.e - t)}</span>`;
     } else if (sched.next && sched.next.s - t < 30 * MIN) {
       planLine = `Раніше за графіком (план з ${hhmm(sched.next.s)})`;
@@ -249,9 +209,9 @@ function renderHero({ live, gridOn, outages, sched, bat, t }) {
     }
     let batLine = "";
     if (bat?.state === "discharge" && bat.eta != null) {
-      const enough = cur ? bat.eta > cur.e - t : null;
+      const enough = onAt ? bat.eta > onAt - t : null;
       batLine = `<div class="hero__bat ${enough === false ? "is-bad" : ""}">
-        ${enough === false ? "⚠️" : "🔋"} Заряду вистачить на <b>~${fmtDur(bat.eta)}</b>
+        Заряду вистачить на <b>~${fmtDur(bat.eta)}</b>
         <span class="muted">при ${nf(-bat.p)} Вт${enough === true ? " — з запасом до увімкнення" : enough === false ? " — може не вистачити до увімкнення" : ""}</span></div>`;
     }
     verdict = `<div class="hero__next">${planLine}</div>${batLine}`;
@@ -262,7 +222,21 @@ function renderHero({ live, gridOn, outages, sched, bat, t }) {
     <div class="hero__status"><span class="status-dot"></span>${gridOn ? "Світло є" : "Світла немає"}</div>
     <div class="hero__big">${main || "&nbsp;"}</div>
     <div class="hero__since muted">${sub}</div>
+    ${addressAlert(state.dtek, t)}
     ${verdict}`;
+}
+
+// Відключення за адресою від ДТЕК (аварійне/стабілізаційне/…) — окремо від графіка черги.
+const ADDRESS_KIND = { emergency: "аварійне", stabilization: "стабілізаційне", planned: "планові роботи", other: "за адресою" };
+function addressAlert(d, t) {
+  const a = d?.address;
+  if (!a?.active || !a.status || a.status === "none") return "";
+  const until = d.restore > t ? d.restore : a.end > t ? a.end : null;
+  return `<div class="hero__alert">
+    <span class="tag tag--unplanned">${esc(ADDRESS_KIND[a.status] || "за адресою")}</span>
+    Відключення за вашою адресою${a.start ? ` з ${hhmm(a.start)}` : ""}${until ? ` · орієнтовно до <b>${hhmm(until)}</b>` : ""}
+    ${a.reason ? `<div class="muted small">${esc(a.reason)}</div>` : ""}
+  </div>`;
 }
 
 // ---------- energy flow diagram: без прямокутників, лише іконки + лінії ----------
@@ -406,7 +380,9 @@ function renderFlow({ live, gridOn, bat }) {
   if (gridOn == null) { el.hidden = true; el.innerHTML = ""; return; }
   el.hidden = false;
 
-  const apt = num(live?.apt?.p);
+  // окремого лічильника квартири може не бути; без світла вся квартира — на інверторі,
+  // тож його навантаження і є споживанням дому
+  const apt = num(live?.apt?.p) ?? (gridOn ? null : num(live?.out?.p));
   const soc = bat?.soc;
   const charging = bat?.state === "charge" ? bat.p : null;
   const discharging = bat?.state === "discharge" ? -bat.p : null;
@@ -442,71 +418,163 @@ function renderFlow({ live, gridOn, bat }) {
     </svg>`;
 }
 
+// Перемальовувати лише коли розмітка справді змінилась: дані з бази приходять кожні
+// кілька секунд, і якщо кнопку підмінити між дотиком і click (на телефоні між ними
+// помітна пауза), натискання губиться.
+function setHTML(el, html) {
+  if (el.__html === html) return;
+  el.__html = html;
+  el.innerHTML = html;
+}
+
 // ---------- розумний будинок: опалення, датчики, вимикачі ----------
+// котел гріє (клапан відкритий) — оранжевий вогник; інакше порожнє місце тієї ж ширини
+const heatLead = (d) => d?.heating
+  ? `<span class="climate__heat" role="img" aria-label="Гріє зараз" title="Гріє зараз"><svg viewBox="0 0 24 24"><path d="M12 2c.6 3.2-1 5.3-2.6 7.2C7.8 11 6.3 12.8 6.3 15.5A5.7 5.7 0 0 0 12 21.2a5.7 5.7 0 0 0 5.7-5.7c0-2.2-.9-3.9-2.2-5.4-.3 1.5-1 2.6-2.1 3.2.4-3.8-.6-8-1.4-11.3z"/></svg></span>`
+  : `<span class="climate__power-spacer" aria-hidden="true"></span>`;
+
+// Вкладка «Керування»: уставки опалення (+/−) і ввімк./вимк.
 function renderClimate(climate) {
   const el = $("#climate");
   if (!el) return;
-  el.innerHTML = `
-    <h2 class="card__title">Температура в квартирі</h2>
+  setHTML(el, `
+    <h2 class="card__title">Опалення</h2>
     <div class="climatelist">
       ${climateDevices.map((c) => {
         const d = climate?.[c.id];
-        const isOff = c.toggle && d?.mode === "off";
-        const powerIcon = `<button class="climate__power ${isOff ? "" : "is-on"}" data-climate-toggle="${c.id}" data-on="${!isOff}" aria-pressed="${!isOff}" aria-label="${isOff ? "Увімкнути" : "Вимкнути"} ${esc(c.label.toLowerCase())}">
+        const p = settleClimate(c.id, d);
+        const pendingMode = p?.mode != null;
+        // поки HA не підтвердив — показуємо вже бажаний стан
+        const isOff = c.toggle && (pendingMode ? p.mode === "off" : d?.mode === "off");
+        const target = p?.target ?? d?.target;
+        const what = esc(c.labelAcc || c.label.toLowerCase());
+        if (pendingMode) {
+          return `<div class="climate__row climate__row--off is-pending" aria-busy="true">
+            <span class="climate__power is-busy" aria-hidden="true"><span class="climate__spin"></span></span>
+            <span class="climate__off-label" aria-live="polite">${p.mode === "off" ? "Вимикаю" : "Вмикаю"} ${what}…</span>
+          </div>`;
+        }
+        const powerIcon = `<button class="climate__power ${isOff ? "" : "is-on"}" data-climate-toggle="${c.id}" data-on="${!isOff}" aria-pressed="${!isOff}" aria-label="${isOff ? "Увімкнути" : "Вимкнути"} ${what}">
             <svg viewBox="-2 0 19 19"><path d="M7.498 17.1a7.128 7.128 0 0 1-.98-.068 7.455 7.455 0 0 1-1.795-.483 7.26 7.26 0 0 1-3.028-2.332A7.188 7.188 0 0 1 .73 12.52a7.304 7.304 0 0 1 .972-7.128 7.221 7.221 0 0 1 1.387-1.385 1.03 1.03 0 0 1 1.247 1.638 5.176 5.176 0 0 0-.993.989 5.313 5.313 0 0 0-.678 1.181 5.23 5.23 0 0 0-.348 1.292 5.22 5.22 0 0 0 .326 2.653 5.139 5.139 0 0 0 .69 1.212 5.205 5.205 0 0 0 .992.996 5.257 5.257 0 0 0 1.178.677 5.37 5.37 0 0 0 1.297.35 5.075 5.075 0 0 0 1.332.008 5.406 5.406 0 0 0 1.32-.343 5.289 5.289 0 0 0 2.211-1.682 5.18 5.18 0 0 0 1.02-2.465 5.2 5.2 0 0 0 .01-1.336 5.315 5.315 0 0 0-.343-1.318 5.195 5.195 0 0 0-.695-1.222 5.134 5.134 0 0 0-.987-.989 1.03 1.03 0 1 1 1.24-1.643 7.186 7.186 0 0 1 1.384 1.386 7.259 7.259 0 0 1 .97 1.706 7.413 7.413 0 0 1 .473 1.827 7.296 7.296 0 0 1-4.522 7.65 7.476 7.476 0 0 1-1.825.471 7.203 7.203 0 0 1-.89.056zM7.5 9.613a1.03 1.03 0 0 1-1.03-1.029V2.522a1.03 1.03 0 0 1 2.06 0v6.062a1.03 1.03 0 0 1-1.03 1.03z"/></svg>
           </button>`;
         if (isOff) {
           return `<div class="climate__row climate__row--off">
             ${powerIcon}
-            <span class="climate__off-label">Увімкнути ${esc(c.label.toLowerCase())}</span>
+            <span class="climate__off-label">Увімкнути ${esc(c.labelAcc || c.label.toLowerCase())}</span>
           </div>`;
         }
+        const lead = c.toggle ? powerIcon : heatLead(d);
         return `<div class="climate__row">
-          ${c.toggle ? powerIcon : `<span class="climate__power-spacer" aria-hidden="true"></span>`}
+          ${lead}
           <span class="climate__big">${d?.current == null ? "—" : nf(d.current, 1)}<span class="unit">°</span></span>
           <span class="climate__label">${esc(c.label)}</span>
           <div class="climate__target">
             <button class="climate__btn" data-climate-dec="${c.id}" aria-label="Знизити ціль">−</button>
-            <span class="climate__val">${d?.target == null ? "—" : nf(d.target, 1) + "°"}</span>
+            <span class="climate__val ${p?.target != null ? "is-pending" : ""}" aria-live="polite">${target == null ? "—" : nf(target, 1) + "°"}</span>
             <button class="climate__btn" data-climate-inc="${c.id}" aria-label="Підвищити ціль">+</button>
           </div>
         </div>`;
       }).join("")}
-    </div>`;
+    </div>`);
 }
 
 function renderSensors(sensors) {
   const el = $("#sensors");
   if (!el) return;
-  const row = (groupLabel, list, data) => list.map((s) => {
+  // Батарейки (home/batteries) з ключем "<група>_<id>" (smoke_hallway, leak_kitchen…)
+  // належать датчикам — показуємо заряд у рядку самого датчика, а не окремим рядком.
+  const LOW = 30;
+  const allBats = state.batteries || {};
+  const row = (group, groupLabel, list, data) => list.map((s) => {
     const alarm = !!data?.[s.id]?.alarm;
-    return `<div class="sensor__row ${alarm ? "is-alarm" : ""}">
+    const pct = allBats[`${group}_${s.id}`]?.pct;
+    const lowBat = !alarm && pct != null && pct <= LOW;
+    return `<div class="sensor__row ${alarm ? "is-alarm" : lowBat ? "is-lowbat" : ""}">
       <span class="sensor__dot"></span>
       <span class="sensor__label">${groupLabel} · ${esc(s.label)}</span>
-      <span class="sensor__state">${alarm ? "⚠️ Увага" : "норма"}</span>
+      <span class="sensor__state">${alarm ? "⚠️ Увага" : lowBat ? `${nf(pct)}% · замінити батарейку` : "норма"}</span>
+    </div>`;
+  }).join("");
+  const sensorKeys = new Set(["smoke", "leak"].flatMap((g) => sensorGroups[g].map((s) => `${g}_${s.id}`)));
+  // решта пристроїв на батарейках (вимикачі, дзвінок): лише ті, що сідають
+  const bats = Object.entries(allBats).filter(([, b]) => b?.pct != null).map(([k, b]) => ({ k, ...b })).sort((a, b) => a.pct - b.pct);
+  const low = bats.filter((b) => b.pct <= LOW && !sensorKeys.has(b.k));
+  const batRows = low.map((b) => `<div class="sensor__row is-lowbat">
+      <span class="sensor__dot"></span>
+      <span class="sensor__label">${esc(b.label)}</span>
+      <span class="sensor__state">${nf(b.pct)}% · замінити</span>
+    </div>`).join("");
+  const batOk = bats.length && !bats.some((b) => b.pct <= LOW)
+    ? `<div class="muted small sensor__bats">Батарейки датчиків у нормі · найнижча ${nf(bats[0].pct)}%</div>` : "";
+  el.innerHTML = `
+    <h2 class="card__title">Датчики</h2>
+    <div class="sensorlist">${row("smoke", "Дим", sensorGroups.smoke, sensors?.smoke)}${row("leak", "Протікання", sensorGroups.leak, sensors?.leak)}${batRows}</div>
+    ${batOk}`;
+}
+
+// ---------- погода (met.no через HA) ----------
+const WEATHER = {
+  "clear-night": ["🌙", "Ясно"], cloudy: ["☁️", "Хмарно"], exceptional: ["⚠️", "Небезпечна погода"],
+  fog: ["🌫️", "Туман"], hail: ["🌨️", "Град"], lightning: ["🌩️", "Гроза"], "lightning-rainy": ["⛈️", "Гроза з дощем"],
+  partlycloudy: ["⛅", "Мінлива хмарність"], pouring: ["🌧️", "Злива"], rainy: ["🌦️", "Дощ"], snowy: ["❄️", "Сніг"],
+  "snowy-rainy": ["🌨️", "Мокрий сніг"], sunny: ["☀️", "Сонячно"], windy: ["💨", "Вітряно"], "windy-variant": ["💨", "Вітряно, хмарно"],
+};
+// Вкладка «Стан»: погода надворі + температура в квартирі (лише перегляд;
+// керування — на вкладці «Керування»).
+function renderAmbient(w, climate) {
+  const el = $("#ambient");
+  if (!el) return;
+  // на «Стані» — лише пристрої з ambientLabel (котел = температура в кімнаті)
+  const rooms = climateDevices.filter((c) => c.ambientLabel).map((c) => {
+    const d = climate?.[c.id];
+    const off = d?.mode === "off";
+    return `<div class="climate__row">
+      ${heatLead(d)}
+      <span class="climate__big">${d?.current == null ? "—" : nf(d.current, 1)}<span class="unit">°</span></span>
+      <span class="climate__label">${esc(c.ambientLabel)}</span>
+      <span class="climate__val ambient__target">${off ? "вимкнено" : d?.target == null ? "" : "ціль " + nf(d.target, 1) + "°"}</span>
     </div>`;
   }).join("");
   el.innerHTML = `
-    <h2 class="card__title">Датчики</h2>
-    <div class="sensorlist">${row("Дим", sensorGroups.smoke, sensors?.smoke)}${row("Протікання", sensorGroups.leak, sensors?.leak)}</div>`;
+    <h2 class="card__title">Погода і квартира</h2>
+    ${w ? weatherBlock(w) : ""}
+    <div class="climatelist ambient__rooms">${rooms}</div>`;
+}
+function weatherBlock(w) {
+  const [icon, label] = WEATHER[w.cond] || ["🌡️", w.cond || ""];
+  const range = w.tmin != null && w.tmax != null ? `${nf(w.tmin)}…${nf(w.tmax)}°` : "";
+  return `
+    <div class="weather">
+      <span class="weather__icon" aria-hidden="true">${icon}</span>
+      <span class="weather__t">${w.t == null ? "—" : nf(w.t, 0)}<span class="unit">°</span></span>
+      <div class="weather__info">
+        <div>${esc(label)}</div>
+        <div class="muted small">${[range && "сьогодні " + range, w.hum != null && `вологість ${nf(w.hum)}%`, w.wind != null && `вітер ${nf(w.wind / 3.6, 0)} м/с`].filter(Boolean).join(" · ")}</div>
+      </div>
+    </div>`;
 }
 
 // Великі плитки 2-в-ряд, уся плитка клікабельна (як у Apple HomeKit).
 function renderSwitches(switches) {
   const el = $("#switches");
   if (!el) return;
-  el.innerHTML = `
+  setHTML(el, `
     <h2 class="card__title">Світло</h2>
     <div class="hk-grid">
       ${rooms.map((r) => {
         const on = !!switches?.[r.id]?.on;
-        return `<button type="button" class="hk-tile ${on ? "is-on" : ""}" data-switch-toggle="${r.id}" data-on="${on}" aria-pressed="${on}">
+        const p = pendingSwitch.get(r.id);
+        if (p && p.on === on) settleSwitch(r.id); // HA підтвердив новий стан
+        const pending = pendingSwitch.has(r.id);
+        const state = pending ? (p.on ? "Вмикаю…" : "Вимикаю…") : on ? "Увімкнено" : "Вимкнено";
+        return `<button type="button" class="hk-tile ${on ? "is-on" : ""} ${pending ? "is-pending" : ""}" data-switch-toggle="${r.id}" data-on="${on}" aria-pressed="${on}" ${pending ? 'aria-busy="true"' : ""}>
+          ${pending ? `<span class="hk-tile__spin" aria-hidden="true"></span>` : ""}
           <svg class="hk-tile__icon" viewBox="0 0 24 24">${ROOM_ICONS[r.id] || FLOW_ICONS.home}</svg>
           <span class="hk-tile__label">${esc(r.label)}</span>
-          <span class="hk-tile__state">${on ? "Увімкнено" : "Вимкнено"}</span>
+          <span class="hk-tile__state" aria-live="polite">${state}</span>
         </button>`;
       }).join("")}
-    </div>`;
+    </div>`);
 }
 
 function socLevel(soc) {
@@ -604,7 +672,7 @@ function renderTimeline(outages, t) {
   const tabs = [[-1, "Вчора"], [0, "Сьогодні"], [1, "Завтра"]]
     .map(([v, l]) => `<button role="tab" aria-selected="${ui.day === v}" data-day="${v}">${l}</button>`).join("");
 
-  // rows of the day list
+  // rows of the day list — план і позапланові разом, за часом початку
   const rows = [];
   for (const p of plan.list) {
     const matches = fact.filter((o) => Math.min(o.e, p.e) - Math.max(o.s, p.s) > 0);
@@ -615,15 +683,15 @@ function renderTimeline(outages, t) {
       const ds = Math.round((m.s - p.s) / MIN);
       factTxt = `факт ${hhmm(m.s)}–${m.ongoing ? "…" : hhmm(m.e)} <span class="muted">(${ds >= 0 ? "+" : "−"}${Math.abs(ds)} хв)</span>`;
     }
-    rows.push(`<li><span class="sw sw--${p.possible ? "possible" : "plan"}"></span>
+    rows.push({ s: p.s, html: `<li><span class="sw sw--${p.possible ? "possible" : "plan"}"></span>
       <b>${hhmm(p.s)}–${p.e >= d1 ? "24:00" : hhmm(p.e)}</b>
       <span class="muted">${p.possible ? "можливе" : "план"} · ${status}</span>
-      ${factTxt ? `<div class="li__sub">${factTxt}</div>` : ""}</li>`);
+      ${factTxt ? `<div class="li__sub">${factTxt}</div>` : ""}</li>` });
   }
   for (const o of fact) {
     if (plan.list.some((p) => Math.min(o.e, p.e) - Math.max(o.s, p.s) > 0)) continue;
-    rows.push(`<li><span class="sw sw--fact"></span><b>${hhmm(o.s)}–${o.ongoing ? "зараз" : hhmm(o.e)}</b>
-      <span class="tag tag--unplanned">позапланове</span> <span class="muted">${fmtDur(o.e - o.s)}</span></li>`);
+    rows.push({ s: o.s, html: `<li><span class="sw sw--fact"></span><b>${hhmm(o.s)}–${o.ongoing ? "зараз" : hhmm(o.e)}</b>
+      <span><span class="tag tag--unplanned">позапланове</span> <span class="muted">${fmtDur(o.e - o.s)}</span></span></li>` });
   }
 
   el.innerHTML = `
@@ -642,7 +710,7 @@ function renderTimeline(outages, t) {
       <span><i class="sw sw--possible"></i>Можливе</span>
       ${ui.day <= 0 ? `<span><i class="sw sw--fact"></i>Факт ${factTotal ? fmtHours(factTotal) : ""}</span>` : ""}
     </div>
-    ${rows.length ? `<ul class="daylist">${rows.join("")}</ul>` : ""}
+    ${rows.length ? `<ul class="daylist">${rows.sort((a, b) => a.s - b.s).map((r) => r.html).join("")}</ul>` : ""}
     ${state.schedule?.latest?.updated ? `<div class="muted small">Графік оновлено ${relDay(state.schedule.latest.updated, t)} о ${hhmm(state.schedule.latest.updated)} · ${esc(state.schedule.latest.source || "")}</div>` : ""}`;
 }
 const pad2 = (h) => String(h).padStart(2, "0");
@@ -788,7 +856,7 @@ function renderLog(outages, planned, t) {
   const page = days.slice(ui.logPage * LOG_PAGE_SIZE, ui.logPage * LOG_PAGE_SIZE + LOG_PAGE_SIZE);
 
   const dayRow = ([key, list]) => {
-    const sorted = [...list].reverse(); // новіші зверху в межах дня
+    const sorted = [...list].sort((a, b) => a.s - b.s); // у межах дня — за годинами
     const totalMs = sorted.reduce((a, o) => a + (Math.min(o.e, t) - o.s), 0);
     const items = sorted.map((o) => {
       const c = classifyOutage(o, planned);
@@ -849,7 +917,7 @@ document.addEventListener("click", (e) => {
   const bar = e.target.closest(".tl__bar");
   if (bar) { $("#tl-detail").textContent = bar.dataset.detail; return; }
   if (e.target.closest("#btn-google")) api?.signInGoogle().catch((er) => toast(er.message));
-  if (e.target.closest("[data-signout]")) { if (DEMO && params.get("demo") !== "login") location.search = ""; else api?.signOut(); }
+  if (e.target.closest("[data-signout]")) api?.signOut();
   if (e.target.closest("#btn-copy-uid")) navigator.clipboard?.writeText($("#uid").textContent).then(() => toast("UID скопійовано"));
 });
 document.addEventListener("submit", (e) => {
@@ -862,27 +930,80 @@ document.addEventListener("input", (e) => {
 });
 
 // ---------- розумний будинок: команди ----------
-// У демо немає живого HA — міняємо стан локально й одразу перемальовуємо.
-// На бою HA сам підхопить команду з home/commands і повернe підтверджений стан.
+// HA сам підхопить команду з home/commands і поверне підтверджений стан.
+// Поки підтвердження немає — плитка «в завантаженні» і не приймає повторних натискань.
+// HA опитує команди раз на 3 с + сцена Tuya ~2 с, тож зазвичай це 3–8 с.
+const SWITCH_TIMEOUT = 15_000;
+const pendingSwitch = new Map(); // roomId → {on, timer}
+function settleSwitch(id) {
+  clearTimeout(pendingSwitch.get(id)?.timer);
+  pendingSwitch.delete(id);
+}
 function sendSwitch(id, on) {
-  if (!state) return;
-  if (DEMO) { state.switches = { ...state.switches, [id]: { on, ts: now() } }; render(); return; }
-  api?.setSwitch(id, on).catch((e) => toast(e.message || String(e)));
+  if (!state || pendingSwitch.has(id)) return;
+  navigator.vibrate?.(15);
+  const label = rooms.find((r) => r.id === id)?.label || "Світло";
+  const timer = setTimeout(() => {
+    if (!pendingSwitch.has(id)) return;
+    settleSwitch(id);
+    toast(`${label}: Home Assistant не підтвердив ${on ? "увімкнення" : "вимкнення"}`);
+    render();
+  }, SWITCH_TIMEOUT);
+  pendingSwitch.set(id, { on, timer });
+  render();
+  api?.setSwitch(id, on).catch((e) => { settleSwitch(id); render(); toast(e.message || String(e)); });
+}
+// Опалення: як і світло — одразу показуємо бажаний стан «в завантаженні», доки HA
+// не підтвердить (Tuya-термостат оновлюється із запізненням у кілька секунд).
+const CLIMATE_TIMEOUT = 20_000;
+const pendingClimate = new Map(); // id → {mode?: "on"|"off", target?, timer, send}
+function climateLabel(id) { return climateDevices.find((c) => c.id === id)?.label || "Опалення"; }
+function armClimate(id, patch) {
+  const p = { ...pendingClimate.get(id), ...patch };
+  clearTimeout(p.timer);
+  p.timer = setTimeout(() => {
+    if (!pendingClimate.has(id)) return;
+    pendingClimate.delete(id);
+    toast(`${climateLabel(id)}: Home Assistant не підтвердив зміну`);
+    render();
+  }, CLIMATE_TIMEOUT);
+  pendingClimate.set(id, p);
+  return p;
+}
+// Викликається з renderClimate: знімає підтверджені частини очікування.
+function settleClimate(id, d) {
+  const p = pendingClimate.get(id);
+  if (!p || !d) return p;
+  if (p.mode != null && (d.mode === "off") === (p.mode === "off")) delete p.mode;
+  if (p.target != null && p.mode == null && !p.send && d.target === p.target) delete p.target;
+  if (p.mode == null && p.target == null) { clearTimeout(p.timer); pendingClimate.delete(id); return null; }
+  return p;
 }
 function adjustClimate(id, delta) {
   if (!state) return;
-  const cur = state.climate?.[id]?.target ?? 22;
+  const p0 = pendingClimate.get(id);
+  if (p0?.mode != null) return; // спершу дочекатись увімк./вимк.
+  navigator.vibrate?.(10);
+  const cur = p0?.target ?? state.climate?.[id]?.target ?? 22;
   const target = Math.round((cur + delta) * 2) / 2; // крок 0.5°
-  if (DEMO) { state.climate = { ...state.climate, [id]: { ...state.climate[id], target, ts: now() } }; render(); return; }
-  api?.setClimateTarget(id, target).catch((e) => toast(e.message || String(e)));
+  // кілька швидких натискань → одна команда з підсумковою ціллю
+  const p = armClimate(id, { target });
+  clearTimeout(p.send);
+  p.send = setTimeout(() => {
+    p.send = null;
+    api?.setClimateTarget(id, target).catch((e) => { pendingClimate.delete(id); render(); toast(e.message || String(e)); });
+  }, 600);
+  render();
 }
 // Повне ввімк./вимк. (напр. тепла підлога) — окремо від уставки температури.
 function toggleClimate(id, on) {
-  if (!state) return;
+  if (!state || pendingClimate.has(id)) return;
+  navigator.vibrate?.(15);
   const target = state.climate?.[id]?.target ?? 22;
-  const mode = on ? "heat" : "off";
-  if (DEMO) { state.climate = { ...state.climate, [id]: { ...state.climate[id], mode, ts: now() } }; render(); return; }
-  api?.setClimateTarget(id, target, mode).catch((e) => toast(e.message || String(e)));
+  armClimate(id, { mode: on ? "on" : "off" });
+  render();
+  api?.setClimateTarget(id, target, on ? "heat" : "off")
+    .catch((e) => { clearTimeout(pendingClimate.get(id)?.timer); pendingClimate.delete(id); render(); toast(e.message || String(e)); });
 }
 
 let resizeT = 0;

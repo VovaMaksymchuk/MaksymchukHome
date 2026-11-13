@@ -59,25 +59,25 @@
   <div data-screen="app" hidden>
     <header class="topbar">
       <h1 id="title">Квартира</h1>
-      <span id="demo-badge" class="chip chip--muted" hidden>демо</span>
       <span id="live-chip" class="chip chip--muted">…</span>
     </header>
     <div id="stale-banner" class="banner" hidden></div>
     <nav class="tabbar" role="tablist">
       <button role="tab" data-panel="status" aria-selected="true">Стан</button>
-      <button role="tab" data-panel="light">Світло</button>
+      <button role="tab" data-panel="control">Керування</button>
       <button role="tab" data-panel="power">Електрика</button>
     </nav>
 
     <main class="grid" data-panel="status">
       <section id="hero" class="card hero" aria-live="polite"></section>
       <section id="flow" class="card" aria-live="polite" hidden></section>
-      <section id="climate" class="card"></section>
+      <section id="ambient" class="card"></section>
       <section id="sensors" class="card"></section>
     </main>
 
-    <main class="grid" data-panel="light" hidden>
+    <main class="grid" data-panel="control" hidden>
       <section id="switches" class="card span-2"></section>
+      <section id="climate" class="card span-2"></section>
     </main>
 
     <main class="grid" data-panel="power" hidden>

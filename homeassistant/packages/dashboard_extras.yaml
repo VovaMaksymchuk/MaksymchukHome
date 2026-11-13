@@ -1,0 +1,110 @@
+# =====================================================================
+#  Додаткові дані для дашборда → Firebase
+#  Файл: /config/packages/dashboard_extras.yaml
+#
+#  Використовує rest_command.firebase_put і sensor.firebase_token з
+#  home_dashboard.yaml.
+#
+#   • home/dtek      — час увімкнення від ДТЕК + аварійні/стабілізаційні
+#                      відключення за адресою (інтеграція DTEK KREM Outages)
+#   • home/batteries — заряд батарейок бездротових датчиків (% )
+#   • home/weather   — погода зараз + мін/макс на сьогодні
+#
+#  ⚙️ entity_id нижче підставлені під цю квартиру.
+# =====================================================================
+
+script:
+  dashboard_push_extras:
+    alias: "Dashboard: push DTEK / батарейки / погода"
+    mode: single
+    max_exceeded: silent
+    variables:
+      # ⚙️ DTEK KREM Outages
+      dtek_end: sensor.volodymyr_maksymchuk_outage_end
+      dtek_restore: sensor.volodymyr_maksymchuk_estimated_restoration
+      dtek_address: sensor.volodymyr_maksymchuk_address_status
+      # ⚙️ батарейки: ключ → [підпис, сенсор %]
+      batteries:
+        smoke_hallway: ["Датчик диму · коридор", sensor.datchik_dimu_battery]
+        leak_bathroom: ["Датчик води · ванна", sensor.datchik_vodi_vanna_battery]
+        leak_kitchen: ["Датчик води · кухня", sensor.datchik_vodi_kukhnia_battery]
+        living_buttons: ["Вимикачі · вітальня", sensor.vitalnia_vimikachi_battery]
+        doorbell: ["Дверний дзвінок", sensor.intelligent_doorbell_battery]
+      # ⚙️ погода
+      weather: weather.forecast_golovna
+    sequence:
+      - action: rest_command.firebase_put
+        continue_on_error: true
+        data:
+          path: home/dtek
+          body:
+            ts: { ".sv": "timestamp" }
+            # кінець поточного відключення за ДТЕК, мс (немає — null)
+            end: "{{ ((as_timestamp(states(dtek_end), 0) * 1000) | int) or none }}"
+            # орієнтовне відновлення (при аварійних), мс
+            restore: "{{ ((as_timestamp(states(dtek_restore), 0) * 1000) | int) or none }}"
+            address:
+              # none / stabilization / emergency / planned / other
+              status: "{{ states(dtek_address) }}"
+              active: "{{ state_attr(dtek_address, 'active') | bool(false) }}"
+              reason: "{{ state_attr(dtek_address, 'reason') }}"
+              start: "{{ ((as_timestamp(state_attr(dtek_address, 'start'), 0) * 1000) | int) or none }}"
+              end: "{{ ((as_timestamp(state_attr(dtek_address, 'end'), 0) * 1000) | int) or none }}"
+
+      - action: rest_command.firebase_put
+        continue_on_error: true
+        data:
+          path: home/batteries
+          body: >-
+            {% set ns = namespace(out={}) %}
+            {% for k, v in batteries.items() if has_value(v[1]) %}
+              {% set ns.out = dict(ns.out, **{k: {'label': v[0], 'pct': states(v[1]) | float(0) | round(0)}}) %}
+            {% endfor %}
+            {{ ns.out }}
+
+      - action: weather.get_forecasts
+        continue_on_error: true
+        target:
+          entity_id: "{{ weather }}"
+        data:
+          type: daily
+        response_variable: fc
+      - variables:
+          today: "{{ (fc[weather].forecast | default([]) | first) if fc is defined and weather in fc else {} }}"
+      - action: rest_command.firebase_put
+        continue_on_error: true
+        data:
+          path: home/weather
+          body:
+            ts: { ".sv": "timestamp" }
+            cond: "{{ states(weather) }}"
+            t: "{{ state_attr(weather, 'temperature') }}"
+            hum: "{{ state_attr(weather, 'humidity') }}"
+            wind: "{{ state_attr(weather, 'wind_speed') }}"
+            tmax: "{{ today.temperature | default(none) }}"
+            tmin: "{{ today.templow | default(none) }}"
+            precip: "{{ today.precipitation | default(none) }}"
+
+automation:
+  - id: dashboard_push_extras
+    alias: "Dashboard: DTEK / батарейки / погода"
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: time_pattern
+        minutes: "/5"
+      - trigger: homeassistant
+        event: start
+      # одразу, коли ДТЕК змінив час увімкнення чи статус адреси
+      - trigger: state
+        entity_id:
+          - sensor.volodymyr_maksymchuk_outage_end
+          - sensor.volodymyr_maksymchuk_estimated_restoration
+          - sensor.volodymyr_maksymchuk_address_status
+    conditions:
+      - condition: state
+        entity_id: sensor.firebase_token
+        state: "ok"
+    actions:
+      - delay: "00:00:05"   # дати токену/інтеграціям піднятись після старту
+      - action: script.dashboard_push_extras

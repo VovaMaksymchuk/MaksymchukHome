@@ -84,8 +84,8 @@ template:
         unique_id: home_dashboard_grid_power
         device_class: power
         # ⚙️3 сенсор напруги мережі (AC input / grid voltage) з EyeBond Local
-        state: "{{ states('sensor.anenji_grid_voltage') | float(0) > 170 }}"
-        availability: "{{ has_value('sensor.anenji_grid_voltage') }}"
+        state: "{{ states('sensor.koridor_anenji_6200_grid_voltage') | float(0) > 170 }}"
+        availability: "{{ has_value('sensor.koridor_anenji_6200_grid_voltage') }}"
         # фільтр коротких провалів; час події коригується на цю ж затримку нижче
         delay_on: "00:00:10"
         delay_off: "00:00:10"
@@ -100,20 +100,20 @@ script:
       # ⚙️2 Заміни на свої entity_id (Settings → Devices → інвертор → Sensors).
       # Якщо якогось сенсора немає — залиш як є, на дашборді буде «—».
       e:
-        grid_voltage: sensor.anenji_grid_voltage
-        grid_freq: sensor.anenji_grid_frequency
-        out_voltage: sensor.anenji_output_voltage
-        out_freq: sensor.anenji_output_frequency
-        out_power: sensor.anenji_output_active_power      # Вт, навантаження
-        out_apparent: sensor.anenji_output_apparent_power # ВА
-        load_pct: sensor.anenji_load_percent              # %
-        bat_soc: sensor.anenji_battery_capacity           # % (або SOC з BMS)
-        bat_voltage: sensor.anenji_battery_voltage
-        bat_current: sensor.anenji_battery_current        # А
-        bat_temp: sensor.anenji_battery_temperature
-        inv_temp: sensor.anenji_inverter_temperature
-        inv_mode: sensor.anenji_operating_mode
-        inv_fault: sensor.anenji_fault_code
+        grid_voltage: sensor.koridor_anenji_6200_grid_voltage
+        grid_freq: sensor.koridor_anenji_6200_grid_frequency
+        out_voltage: sensor.koridor_anenji_6200_output_voltage
+        out_freq: sensor.koridor_anenji_6200_output_frequency
+        out_power: sensor.koridor_anenji_6200_load_power      # Вт, навантаження
+        out_apparent: sensor.anenji_output_apparent_power # ВА — в EyeBond немає, буде «—»
+        load_pct: sensor.koridor_anenji_6200_load_percent              # %
+        bat_soc: sensor.koridor_anenji_6200_battery_percent           # % (або SOC з BMS)
+        bat_voltage: sensor.koridor_anenji_6200_battery_voltage
+        bat_current: sensor.koridor_anenji_6200_battery_current        # А
+        bat_temp: sensor.anenji_battery_temperature  # в EyeBond немає, буде «—»
+        inv_temp: sensor.koridor_anenji_6200_inverter_temperature
+        inv_mode: sensor.koridor_anenji_6200_operating_mode
+        inv_fault: sensor.koridor_anenji_6200_fault_code
         # ⚙️5 лічильник всієї квартири (окремо від інвертора) — постав свій entity_id,
         # коли з'явиться; поки його нема, лишай як є — поле apt просто не запишеться.
         apt_power: sensor.TODO_apartment_total_power
@@ -129,7 +129,7 @@ script:
           body:
             ts: { ".sv": "timestamp" }
             grid:
-              on: "{{ is_state('binary_sensor.grid_power', 'on') }}"
+              "on": "{{ is_state('binary_sensor.grid_power', 'on') }}"
               v: "{{ states(e.grid_voltage) | float(none) }}"
               hz: "{{ states(e.grid_freq) | float(none) }}"
             out:
@@ -184,7 +184,7 @@ automation:
         data:
           path: "home/grid_events/{{ ts }}"
           body:
-            on: "{{ trigger.to_state.state == 'on' }}"
+            "on": "{{ trigger.to_state.state == 'on' }}"
             ts: "{{ ts * 1000 }}"
       - action: script.home_dashboard_push_live
 
@@ -202,10 +202,10 @@ automation:
     actions:
       - variables:
           # ⚙️2 ті самі сенсори, що й у скрипті
-          soc: sensor.anenji_battery_capacity
-          load: sensor.anenji_output_active_power
-          bv: sensor.anenji_battery_voltage
-          ba: sensor.anenji_battery_current
+          soc: sensor.koridor_anenji_6200_battery_percent
+          load: sensor.koridor_anenji_6200_load_power
+          bv: sensor.koridor_anenji_6200_battery_voltage
+          ba: sensor.koridor_anenji_6200_battery_current
           bat_sign: 1
       - action: rest_command.firebase_put
         continue_on_error: true
@@ -245,14 +245,14 @@ automation:
     mode: single
     max_exceeded: silent
     variables:
-      cal: calendar.outages   # ⚙️4 заміни на свій календар
+      cal: calendar.volodymyr_maksymchuk_outages   # ⚙️4 заміни на свій календар
     triggers:
       - trigger: time_pattern
         minutes: "/10"
       - trigger: homeassistant
         event: start
       - trigger: state
-        entity_id: calendar.outages   # ⚙️4 той самий календар
+        entity_id: calendar.volodymyr_maksymchuk_outages   # ⚙️4 той самий календар
     conditions:
       - condition: state
         entity_id: sensor.firebase_token
