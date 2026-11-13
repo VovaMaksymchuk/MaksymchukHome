@@ -1,0 +1,304 @@
+# =====================================================================
+#  Home Dashboard → Firebase Realtime Database
+#  Файл: /config/packages/home_dashboard.yaml
+#
+#  У configuration.yaml має бути:
+#    homeassistant:
+#      packages: !include_dir_named packages
+#
+#  Шукай позначки ⚙️ — це все, що треба змінити під себе:
+#    ⚙️1  URL бази даних Firebase — вже підставлено (maksymchukhome)
+#    ⚙️2  entity_id сенсорів інвертора (скрипт home_dashboard_push_live)
+#    ⚙️3  entity_id напруги мережі (binary_sensor "Grid power")
+#    ⚙️4  календар графіка відключень (автоматизація schedule)
+#    ⚙️5  (опційно) окремий лічильник споживання всієї квартири, якщо з'явиться —
+#         відмінний від навантаження інвертора: при світлі АВР живить квартиру
+#         напряму, інвертор лише підзаряджає батарею. Без цього сенсора поле
+#         просто не пишеться й на дашборді буде «—».
+#  Секрети (email/пароль HA-користувача Firebase, apiKey) — у secrets.yaml,
+#  див. secrets.example.yaml поруч.
+# =====================================================================
+
+rest_command:
+  # Вхід HA-користувача у Firebase Auth → idToken (живе 1 год)
+  firebase_sign_in:
+    url: !secret firebase_signin_url
+    method: POST
+    content_type: "application/json"
+    payload: !secret firebase_signin_payload
+    timeout: 20
+
+  # Запис JSON у довільний шлях бази.
+  firebase_put:
+    url: >-
+      https://maksymchukhome-default-rtdb.europe-west1.firebasedatabase.app/{{ path }}.json?auth={{ state_attr('sensor.firebase_token', 'id_token') }}
+    method: PUT
+    content_type: "application/json"
+    payload: "{{ body | to_json }}"
+    timeout: 15
+
+  # Видалення шляху (чистка старої історії).
+  firebase_delete:
+    url: >-
+      https://maksymchukhome-default-rtdb.europe-west1.firebasedatabase.app/{{ path }}.json?auth={{ state_attr('sensor.firebase_token', 'id_token') }}
+    method: DELETE
+    timeout: 15
+
+template:
+  # ---------- Токен Firebase: оновлюється кожні 45 хв (живе 60) ----------
+  - triggers:
+      - trigger: homeassistant
+        event: start
+        id: start
+      - trigger: time_pattern
+        minutes: "/45"
+        id: refresh
+      - trigger: time_pattern
+        minutes: "/2"
+        id: retry
+    conditions:
+      # retry кожні 2 хв лише якщо минулий вхід не вдався
+      - condition: template
+        value_template: "{{ trigger.id != 'retry' or not is_state('sensor.firebase_token', 'ok') }}"
+    actions:
+      - action: rest_command.firebase_sign_in
+        response_variable: fb_auth
+        continue_on_error: true
+    sensor:
+      - name: "Firebase token"
+        unique_id: home_dashboard_firebase_token
+        icon: mdi:key-chain
+        state: >-
+          {{ 'ok' if fb_auth is defined and fb_auth.status == 200 else 'error' }}
+        attributes:
+          id_token: >-
+            {{ fb_auth.content.idToken if fb_auth is defined and fb_auth.status == 200 else '' }}
+          uid: >-
+            {{ fb_auth.content.localId if fb_auth is defined and fb_auth.status == 200 else '' }}
+          http_status: "{{ fb_auth.status if fb_auth is defined else 'no response' }}"
+          refreshed: "{{ now().isoformat() }}"
+
+  # ---------- Чи є світло в мережі (за напругою на вході інвертора) ----------
+  - binary_sensor:
+      - name: "Grid power"
+        unique_id: home_dashboard_grid_power
+        device_class: power
+        # ⚙️3 сенсор напруги мережі (AC input / grid voltage) з EyeBond Local
+        state: "{{ states('sensor.anenji_grid_voltage') | float(0) > 170 }}"
+        availability: "{{ has_value('sensor.anenji_grid_voltage') }}"
+        # фільтр коротких провалів; час події коригується на цю ж затримку нижче
+        delay_on: "00:00:10"
+        delay_off: "00:00:10"
+
+script:
+  # ---------- Живий стан → /home/live ----------
+  home_dashboard_push_live:
+    alias: "Dashboard: push live state"
+    mode: single
+    max_exceeded: silent
+    variables:
+      # ⚙️2 Заміни на свої entity_id (Settings → Devices → інвертор → Sensors).
+      # Якщо якогось сенсора немає — залиш як є, на дашборді буде «—».
+      e:
+        grid_voltage: sensor.anenji_grid_voltage
+        grid_freq: sensor.anenji_grid_frequency
+        out_voltage: sensor.anenji_output_voltage
+        out_freq: sensor.anenji_output_frequency
+        out_power: sensor.anenji_output_active_power      # Вт, навантаження
+        out_apparent: sensor.anenji_output_apparent_power # ВА
+        load_pct: sensor.anenji_load_percent              # %
+        bat_soc: sensor.anenji_battery_capacity           # % (або SOC з BMS)
+        bat_voltage: sensor.anenji_battery_voltage
+        bat_current: sensor.anenji_battery_current        # А
+        bat_temp: sensor.anenji_battery_temperature
+        inv_temp: sensor.anenji_inverter_temperature
+        inv_mode: sensor.anenji_operating_mode
+        inv_fault: sensor.anenji_fault_code
+        # ⚙️5 лічильник всієї квартири (окремо від інвертора) — постав свій entity_id,
+        # коли з'явиться; поки його нема, лишай як є — поле apt просто не запишеться.
+        apt_power: sensor.TODO_apartment_total_power
+      # Якщо струм батареї при ЗАРЯДІ від'ємний — постав -1
+      bat_sign: 1
+      bat_v: "{{ states(e.bat_voltage) | float(none) }}"
+      bat_a: "{{ states(e.bat_current) | float(none) }}"
+    sequence:
+      - action: rest_command.firebase_put
+        continue_on_error: true
+        data:
+          path: home/live
+          body:
+            ts: { ".sv": "timestamp" }
+            grid:
+              on: "{{ is_state('binary_sensor.grid_power', 'on') }}"
+              v: "{{ states(e.grid_voltage) | float(none) }}"
+              hz: "{{ states(e.grid_freq) | float(none) }}"
+            out:
+              v: "{{ states(e.out_voltage) | float(none) }}"
+              hz: "{{ states(e.out_freq) | float(none) }}"
+              p: "{{ states(e.out_power) | float(none) }}"
+              va: "{{ states(e.out_apparent) | float(none) }}"
+              pct: "{{ states(e.load_pct) | float(none) }}"
+            apt:
+              p: "{{ states(e.apt_power) | float(none) }}"
+            bat:
+              soc: "{{ states(e.bat_soc) | float(none) }}"
+              v: "{{ bat_v }}"
+              a: "{{ (bat_a * bat_sign) if bat_a is number else none }}"
+              p: "{{ (bat_v * bat_a * bat_sign) | round(0) if (bat_v is number and bat_a is number) else none }}"
+              t: "{{ states(e.bat_temp) | float(none) }}"
+            inv:
+              mode: "{{ states(e.inv_mode) }}"
+              t: "{{ states(e.inv_temp) | float(none) }}"
+              fault: "{{ states(e.inv_fault) }}"
+
+automation:
+  # ---------- Живий стан кожні 15 с ----------
+  - id: home_dashboard_live
+    alias: "Dashboard: live кожні 15 с"
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: time_pattern
+        seconds: "/15"
+    conditions:
+      - condition: state
+        entity_id: sensor.firebase_token
+        state: "ok"
+    actions:
+      - action: script.home_dashboard_push_live
+
+  # ---------- Подія мережі (світло зникло / з'явилось) ----------
+  - id: home_dashboard_grid_event
+    alias: "Dashboard: подія мережі"
+    mode: queued
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.grid_power
+        to: ["on", "off"]
+    actions:
+      - variables:
+          # мінус 10 с — компенсація delay_on/delay_off у binary_sensor
+          ts: "{{ as_timestamp(trigger.to_state.last_changed) | int - 10 }}"
+      - action: rest_command.firebase_put
+        continue_on_error: true
+        data:
+          path: "home/grid_events/{{ ts }}"
+          body:
+            on: "{{ trigger.to_state.state == 'on' }}"
+            ts: "{{ ts * 1000 }}"
+      - action: script.home_dashboard_push_live
+
+  # ---------- Історія для графіків: кожні 5 хв ----------
+  - id: home_dashboard_history
+    alias: "Dashboard: історія кожні 5 хв"
+    mode: single
+    triggers:
+      - trigger: time_pattern
+        minutes: "/5"
+    conditions:
+      - condition: state
+        entity_id: sensor.firebase_token
+        state: "ok"
+    actions:
+      - variables:
+          # ⚙️2 ті самі сенсори, що й у скрипті
+          soc: sensor.anenji_battery_capacity
+          load: sensor.anenji_output_active_power
+          bv: sensor.anenji_battery_voltage
+          ba: sensor.anenji_battery_current
+          bat_sign: 1
+      - action: rest_command.firebase_put
+        continue_on_error: true
+        data:
+          path: "home/history/{{ now().strftime('%Y-%m-%d') }}/{{ now().timestamp() | int }}"
+          body:
+            soc: "{{ states(soc) | float(none) }}"
+            load: "{{ states(load) | float(none) }}"
+            bp: >-
+              {% set v = states(bv) | float(none) %}{% set a = states(ba) | float(none) %}
+              {{ (v * a * bat_sign) | round(0) if (v is number and a is number) else none }}
+            g: "{{ 1 if is_state('binary_sensor.grid_power', 'on') else 0 }}"
+
+  # ---------- Чистка історії старше 45 днів ----------
+  - id: home_dashboard_history_cleanup
+    alias: "Dashboard: чистка історії"
+    triggers:
+      - trigger: time_pattern
+        hours: "3"
+        minutes: "17"
+    actions:
+      - repeat:
+          for_each: "{{ range(45, 52) | list }}"
+          sequence:
+            - action: rest_command.firebase_delete
+              continue_on_error: true
+              data:
+                path: "home/history/{{ (now() - timedelta(days=repeat.item)).strftime('%Y-%m-%d') }}"
+
+  # ---------- Графік відключень з відкритих джерел ----------
+  # Працює з будь-якою інтеграцією, що дає calendar-сутність:
+  #   Svitlo Yeah (ALERTua/ha-svitlo-yeah) — багато областей,
+  #   Yasno Outages (denysdovhan/ha-yasno-outages) — Київ, Дніпро,
+  #   DTEK (aavdberg/ha-dtek) — Київ, Київщина, Дніпро, Одеса.
+  - id: home_dashboard_schedule
+    alias: "Dashboard: графік відключень"
+    mode: single
+    max_exceeded: silent
+    variables:
+      cal: calendar.outages   # ⚙️4 заміни на свій календар
+    triggers:
+      - trigger: time_pattern
+        minutes: "/10"
+      - trigger: homeassistant
+        event: start
+      - trigger: state
+        entity_id: calendar.outages   # ⚙️4 той самий календар
+    conditions:
+      - condition: state
+        entity_id: sensor.firebase_token
+        state: "ok"
+      # не затирати графік, якщо інтеграція впала
+      - condition: template
+        value_template: "{{ has_value(cal) }}"
+    actions:
+      - action: calendar.get_events
+        target:
+          entity_id: "{{ cal }}"
+        data:
+          start_date_time: "{{ (today_at() - timedelta(days=1)).isoformat() }}"
+          end_date_time: "{{ (today_at() + timedelta(days=3)).isoformat() }}"
+        response_variable: agenda
+      - variables:
+          events: >-
+            {% set ns = namespace(out=[]) %}
+            {% for ev in agenda[cal].events | default([]) if 'T' in ev.start %}
+              {% set ns.out = ns.out + [{
+                's': (as_timestamp(ev.start) * 1000) | int,
+                'e': (as_timestamp(ev.end) * 1000) | int,
+                't': ev.summary | default('')
+              }] %}
+            {% endfor %}
+            {{ ns.out }}
+      - action: rest_command.firebase_put
+        continue_on_error: true
+        data:
+          path: home/schedule/latest
+          body:
+            updated: { ".sv": "timestamp" }
+            source: "{{ cal }}"
+            events: "{{ events }}"
+      # Знімок плану по днях — щоб потім порівнювати «план vs факт»
+      - repeat:
+          for_each: [0, 1]
+          sequence:
+            - variables:
+                d0: "{{ (as_timestamp(today_at() + timedelta(days=repeat.item)) * 1000) | int }}"
+                key: "{{ (today_at() + timedelta(days=repeat.item)).strftime('%Y-%m-%d') }}"
+            - action: rest_command.firebase_put
+              continue_on_error: true
+              data:
+                path: "home/schedule/days/{{ key }}"
+                body:
+                  updated: { ".sv": "timestamp" }
+                  events: >-
+                    {{ events | selectattr('e', 'gt', d0) | selectattr('s', 'lt', d0 + 86400000) | list }}

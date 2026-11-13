@@ -1,0 +1,217 @@
+# =====================================================================
+#  Розумний будинок (Tuya через HA) → Firebase + команди з дашборда
+#  Файл: /config/packages/smart_home.yaml
+#
+#  Використовує rest_command.firebase_put / firebase_delete та
+#  sensor.firebase_token, визначені в home_dashboard.yaml — обидва файли
+#  вантажаться як один пакет (packages: !include_dir_named packages),
+#  тож достатньо задати ці ключі один раз.
+#
+#  Напрямок даних:
+#   • home/switches, home/climate, home/sensors — HA → Firebase, читає дашборд.
+#   • home/commands/* — дашборд → Firebase, читає й виконує HA (раз на 3с),
+#     після виконання видаляє запис і одразу пушить підтверджений стан.
+#
+#  ⚙️ Підстав РЕАЛЬНІ entity_id нижче замість switch.YOUR_* / climate.YOUR_* /
+#  binary_sensor.YOUR_* (Settings → Devices & services → Tuya). Ключі зліва
+#  (living/bedroom/office/hallway, boiler/floor, bathroom/kitchen/hallway) —
+#  фіксовані, бо на них зав'язаний дашборд (public/config.js: rooms,
+#  climateDevices, sensorGroups) — не перейменовуй їх тут.
+#  Список кімнат/пристроїв повторюється в кількох місцях нижче — міняй скрізь.
+# =====================================================================
+
+rest_command:
+  # GET з Firebase — для читання команд дашборда. ⚙️ той самий DB URL, що в home_dashboard.yaml.
+  firebase_get:
+    url: >-
+      https://maksymchukhome-default-rtdb.europe-west1.firebasedatabase.app/{{ path }}.json?auth={{ state_attr('sensor.firebase_token', 'id_token') }}
+    method: GET
+    timeout: 15
+
+script:
+  # ---------- Стан вимикачів світла → /home/switches ----------
+  smart_home_push_switches:
+    alias: "Smart home: push switches"
+    mode: single
+    max_exceeded: silent
+    variables:
+      rooms:
+        living: switch.YOUR_LIVING_LIGHT     # ⚙️ Вітальня
+        bedroom: switch.YOUR_BEDROOM_LIGHT   # ⚙️ Спальня
+        office: switch.YOUR_OFFICE_LIGHT     # ⚙️ Кабінет
+        hallway: switch.YOUR_HALLWAY_LIGHT   # ⚙️ Коридор
+    sequence:
+      - repeat:
+          for_each: "{{ rooms | list }}"
+          sequence:
+            - action: rest_command.firebase_put
+              continue_on_error: true
+              data:
+                path: "home/switches/{{ repeat.item }}"
+                body:
+                  on: "{{ is_state(rooms[repeat.item], 'on') }}"
+                  ts: { ".sv": "timestamp" }
+
+  # ---------- Котел + тепла підлога (поточна/цільова температура) → /home/climate ----------
+  smart_home_push_climate:
+    alias: "Smart home: push climate"
+    mode: single
+    max_exceeded: silent
+    variables:
+      devices:
+        boiler: climate.YOUR_BOILER         # ⚙️ Котел
+        floor: climate.YOUR_FLOOR_HEATING   # ⚙️ Тепла підлога
+    sequence:
+      - repeat:
+          for_each: "{{ devices | list }}"
+          sequence:
+            - action: rest_command.firebase_put
+              continue_on_error: true
+              data:
+                path: "home/climate/{{ repeat.item }}"
+                body:
+                  current: "{{ state_attr(devices[repeat.item], 'current_temperature') }}"
+                  target: "{{ state_attr(devices[repeat.item], 'temperature') }}"
+                  mode: "{{ states(devices[repeat.item]) }}"
+                  ts: { ".sv": "timestamp" }
+
+  # ---------- Датчики диму/протікання → /home/sensors ----------
+  smart_home_push_sensors:
+    alias: "Smart home: push leak/smoke sensors"
+    mode: single
+    max_exceeded: silent
+    variables:
+      leak:
+        bathroom: binary_sensor.YOUR_LEAK_BATHROOM   # ⚙️ Ванна
+        kitchen: binary_sensor.YOUR_LEAK_KITCHEN     # ⚙️ Кухня
+      smoke:
+        kitchen: binary_sensor.YOUR_SMOKE_KITCHEN    # ⚙️ Кухня
+        hallway: binary_sensor.YOUR_SMOKE_HALLWAY    # ⚙️ Коридор
+    sequence:
+      - repeat:
+          for_each: "{{ leak | list }}"
+          sequence:
+            - action: rest_command.firebase_put
+              continue_on_error: true
+              data:
+                path: "home/sensors/leak/{{ repeat.item }}"
+                body:
+                  alarm: "{{ is_state(leak[repeat.item], 'on') }}"
+                  ts: { ".sv": "timestamp" }
+      - repeat:
+          for_each: "{{ smoke | list }}"
+          sequence:
+            - action: rest_command.firebase_put
+              continue_on_error: true
+              data:
+                path: "home/sensors/smoke/{{ repeat.item }}"
+                body:
+                  alarm: "{{ is_state(smoke[repeat.item], 'on') }}"
+                  ts: { ".sv": "timestamp" }
+
+automation:
+  # ---------- Періодичний пуш стану (кожні 10с) ----------
+  - id: smart_home_push_periodic
+    alias: "Smart home: періодичний пуш стану"
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: time_pattern
+        seconds: "/10"
+      - trigger: homeassistant
+        event: start
+    conditions:
+      - condition: state
+        entity_id: sensor.firebase_token
+        state: "ok"
+    actions:
+      - action: script.smart_home_push_switches
+      - action: script.smart_home_push_climate
+      - action: script.smart_home_push_sensors
+
+  # ---------- Виконання команд із дашборда (кожні 3с) ----------
+  # Дашборд пише в home/commands/switches/<id> і home/commands/climate/<id>;
+  # тут читаємо, виконуємо через Tuya-сутності, видаляємо команду, пушимо новий стан.
+  - id: smart_home_commands
+    alias: "Smart home: виконання команд із дашборда"
+    mode: single
+    max_exceeded: silent
+    variables:
+      rooms:
+        living: switch.YOUR_LIVING_LIGHT     # ⚙️ той самий список, що в smart_home_push_switches
+        bedroom: switch.YOUR_BEDROOM_LIGHT
+        office: switch.YOUR_OFFICE_LIGHT
+        hallway: switch.YOUR_HALLWAY_LIGHT
+      climate_devices:
+        boiler: climate.YOUR_BOILER          # ⚙️ той самий список, що в smart_home_push_climate
+        floor: climate.YOUR_FLOOR_HEATING
+    triggers:
+      - trigger: time_pattern
+        seconds: "/3"
+    conditions:
+      - condition: state
+        entity_id: sensor.firebase_token
+        state: "ok"
+    actions:
+      - action: rest_command.firebase_get
+        continue_on_error: true
+        data:
+          path: "home/commands/switches"
+        response_variable: sw_cmds
+      - variables:
+          switch_cmds: >-
+            {{ (sw_cmds.content | from_json)
+               if (sw_cmds is defined and sw_cmds.status == 200 and sw_cmds.content not in ['null', ''])
+               else {} }}
+      - repeat:
+          for_each: "{{ switch_cmds | list }}"
+          sequence:
+            - if:
+                - condition: template
+                  value_template: "{{ repeat.item in rooms }}"
+              then:
+                - action: "{{ 'switch.turn_on' if switch_cmds[repeat.item].on else 'switch.turn_off' }}"
+                  target:
+                    entity_id: "{{ rooms[repeat.item] }}"
+                - action: rest_command.firebase_delete
+                  continue_on_error: true
+                  data:
+                    path: "home/commands/switches/{{ repeat.item }}"
+      - action: rest_command.firebase_get
+        continue_on_error: true
+        data:
+          path: "home/commands/climate"
+        response_variable: cl_cmds
+      - variables:
+          climate_cmds: >-
+            {{ (cl_cmds.content | from_json)
+               if (cl_cmds is defined and cl_cmds.status == 200 and cl_cmds.content not in ['null', ''])
+               else {} }}
+      - repeat:
+          for_each: "{{ climate_cmds | list }}"
+          sequence:
+            - if:
+                - condition: template
+                  value_template: "{{ repeat.item in climate_devices }}"
+              then:
+                - action: climate.set_temperature
+                  target:
+                    entity_id: "{{ climate_devices[repeat.item] }}"
+                  data:
+                    temperature: "{{ climate_cmds[repeat.item].target }}"
+                # mode — лише коли дашборд прислав його (напр. тепла підлога: увімк./вимк.).
+                - if:
+                    - condition: template
+                      value_template: "{{ 'mode' in climate_cmds[repeat.item] }}"
+                  then:
+                    - action: climate.set_hvac_mode
+                      target:
+                        entity_id: "{{ climate_devices[repeat.item] }}"
+                      data:
+                        hvac_mode: "{{ climate_cmds[repeat.item].mode }}"
+                - action: rest_command.firebase_delete
+                  continue_on_error: true
+                  data:
+                    path: "home/commands/climate/{{ repeat.item }}"
+      - action: script.smart_home_push_switches
+      - action: script.smart_home_push_climate
